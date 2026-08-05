@@ -23,9 +23,9 @@ struct MenuBarView: View {
     @State private var pinnedOtherDeviceKeys: Set<String> = []
 
     @State private var colorPickerIdentityKey: String?
+    @State private var renamingIdentityKey: String?
     @State private var renameText = ""
-    @State private var isEditingTitle = false
-    @State private var isHoveringTitle = false
+    @State private var hoveringRenameKey: String?
 
     private var activeDevice: AudioOutputDevice? {
         appState.devices.first(where: \.isDefault)
@@ -130,49 +130,81 @@ struct MenuBarView: View {
         focusActiveOutput(animated: false)
     }
 
-    // MARK: - Active output header
+    // MARK: - Output headers (active + inactive share the same chrome)
 
     private var activeOutputHeader: some View {
-        HStack(spacing: 10) {
-            activeTitle
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: handleActiveOutputTap)
-
+        Group {
             if let device = activeDevice {
-                let mapping = appState.config.mapping(forIdentity: device.identityKey)
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: { mapping.enabled },
-                        set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
-                    )
+                outputHeader(
+                    device,
+                    isFocused: isActivePanelVisible,
+                    accent: activeAccent,
+                    topPadding: 12,
+                    onToggleExpand: {
+                        if renamingIdentityKey != nil {
+                            commitRename()
+                        } else if !isActivePanelVisible {
+                            focusActiveOutput(animated: true)
+                        }
+                    }
                 )
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .focusEffectDisabled()
-                .focusable(false)
-                .disabled(mapping.profileFilename == nil)
-                .tint(activeAccent)
+            } else {
+                Text("No Output")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .padding(.bottom, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private func outputHeader(
+        _ device: AudioOutputDevice,
+        isFocused: Bool,
+        accent: Color,
+        topPadding: CGFloat = 10,
+        onToggleExpand: @escaping () -> Void
+    ) -> some View {
+        let mapping = appState.config.mapping(forIdentity: device.identityKey)
+        return HStack(spacing: 10) {
+            outputTitle(device, isFocused: isFocused)
+
+            // Empty header area expands/collapses (and dismisses a sticky rename).
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 22)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onToggleExpand)
+
+            Toggle(
+                "",
+                isOn: Binding(
+                    get: { mapping.enabled },
+                    set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
+                )
+            )
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .focusEffectDisabled()
+            .focusable(false)
+            .disabled(mapping.profileFilename == nil)
+            .tint(accent)
+        }
         .padding(.horizontal, 14)
-        .padding(.top, 12)
+        .padding(.top, topPadding)
         .padding(.bottom, 10)
     }
 
-    private func handleActiveOutputTap() {
-        if isActivePanelVisible {
-            isEditingTitle = true
-        } else {
-            focusActiveOutput(animated: true)
-        }
-    }
-
     @ViewBuilder
-    private var activeTitle: some View {
-        if isEditingTitle, isActivePanelVisible {
+    private func outputTitle(_ device: AudioOutputDevice, isFocused: Bool) -> some View {
+        let key = device.identityKey
+        let isRenaming = renamingIdentityKey == key
+        let isHovering = hoveringRenameKey == key
+
+        if isRenaming, isFocused {
             TextField("Name", text: $renameText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .semibold))
@@ -182,24 +214,48 @@ struct MenuBarView: View {
                     if !focused { commitRename() }
                 }
                 .onAppear { focusedRenameID = true }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
         } else {
-            Text(activeDevice?.name ?? "No Output")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.primary)
+            Text(device.name)
+                .font(.system(size: 13, weight: isFocused ? .semibold : .regular))
+                .foregroundStyle(isFocused ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color.primary.opacity(isHoveringTitle && isActivePanelVisible ? 0.05 : 0))
+                        .fill(Color.primary.opacity(isHovering && isFocused ? 0.05 : 0))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(
-                            Color.secondary.opacity(isHoveringTitle && isActivePanelVisible ? 0.35 : 0),
+                            Color.secondary.opacity(isHovering && isFocused ? 0.35 : 0),
                             lineWidth: 1
                         )
                 )
-                .onHover { isHoveringTitle = $0 }
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+                .onHover { hovering in
+                    hoveringRenameKey = hovering ? key : (hoveringRenameKey == key ? nil : hoveringRenameKey)
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    handleTitleTap(device, isFocused: isFocused)
+                }
+        }
+    }
+
+    private func handleTitleTap(_ device: AudioOutputDevice, isFocused: Bool) {
+        if isFocused {
+            beginRename(device)
+        } else if device.isDefault {
+            focusActiveOutput(animated: true)
+        } else {
+            focusOtherDevice(device, animated: true)
         }
     }
 
@@ -256,37 +312,19 @@ struct MenuBarView: View {
         mapping: OutputMapping,
         isExpanded: Bool
     ) -> some View {
-        HStack(spacing: 10) {
-            Button {
+        outputHeader(
+            device,
+            isFocused: isExpanded,
+            accent: Color(nsColor: .systemGray),
+            topPadding: 10,
+            onToggleExpand: {
+                if renamingIdentityKey != nil {
+                    commitRename()
+                    return
+                }
                 toggleOtherDevice(device)
-            } label: {
-                Text(device.name)
-                    .font(.system(size: 13))
-                    .foregroundStyle(isExpanded ? .primary : .secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { mapping.enabled },
-                    set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
-                )
-            )
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .focusEffectDisabled()
-            .focusable(false)
-            .disabled(mapping.profileFilename == nil)
-            .tint(Color(nsColor: .systemGray))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        )
     }
 
     private func toggleOtherDevice(_ device: AudioOutputDevice) {
@@ -318,10 +356,11 @@ struct MenuBarView: View {
                 showsLeadingDivider: true
             ) * otherDevicePanelProgress
         }()
+        let preferredOtherProfiles = preferredOtherProfilesProgress(for: key)
         let newOther = OutputEQPanelMetrics.height(
             appState: appState,
             identityKey: key,
-            otherProfilesProgress: 0,
+            otherProfilesProgress: preferredOtherProfiles,
             showsLeadingDivider: true
         )
         let delta = newOther - oldActive - oldOther
@@ -333,23 +372,24 @@ struct MenuBarView: View {
                 activeOtherProfilesProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
-                inactiveOtherProfilesProgress = 0
+                inactiveOtherProfilesProgress = preferredOtherProfiles
                 colorPickerIdentityKey = nil
-                isEditingTitle = false
+                endRenameIfNeeded()
             }
         } else {
             activePanelProgress = 0
             activeOtherProfilesProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
-            inactiveOtherProfilesProgress = 0
+            inactiveOtherProfilesProgress = preferredOtherProfiles
             colorPickerIdentityKey = nil
-            isEditingTitle = false
+            endRenameIfNeeded()
         }
     }
 
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
+        let preferredOtherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
         let oldOther: CGFloat = {
             guard let existing = expandedOtherDeviceKey else { return 0 }
             return OutputEQPanelMetrics.height(
@@ -363,7 +403,7 @@ struct MenuBarView: View {
             OutputEQPanelMetrics.height(
                 appState: appState,
                 identityKey: $0,
-                otherProfilesProgress: 0,
+                otherProfilesProgress: preferredOtherProfiles,
                 showsLeadingDivider: true
             )
         } ?? 0
@@ -381,10 +421,11 @@ struct MenuBarView: View {
             popoverChrome.animateDisclosure(deltaHeight: delta)
             withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
                 activePanelProgress = 1
-                activeOtherProfilesProgress = 0
+                activeOtherProfilesProgress = preferredOtherProfiles
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
                 colorPickerIdentityKey = nil
+                endRenameIfNeeded()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
                 if otherDevicePanelProgress < 0.01 {
@@ -393,12 +434,18 @@ struct MenuBarView: View {
             }
         } else {
             activePanelProgress = 1
-            activeOtherProfilesProgress = 0
+            activeOtherProfilesProgress = preferredOtherProfiles
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
             inactiveOtherProfilesProgress = 0
             colorPickerIdentityKey = nil
+            endRenameIfNeeded()
         }
+    }
+
+    /// No Profile → Other Profiles starts open so picking an EQ is one less click.
+    private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
+        appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
     // MARK: - Shared chrome
@@ -439,20 +486,34 @@ struct MenuBarView: View {
     }
 
     private func syncRenameText() {
-        renameText = activeDevice?.name ?? ""
-        isEditingTitle = false
+        renamingIdentityKey = nil
+        renameText = ""
+        focusedRenameID = false
+    }
+
+    private func beginRename(_ device: AudioOutputDevice) {
+        renamingIdentityKey = device.identityKey
+        renameText = device.name
+        focusedRenameID = true
+    }
+
+    private func endRenameIfNeeded() {
+        guard renamingIdentityKey != nil else { return }
+        commitRename()
     }
 
     private func commitRename() {
+        let key = renamingIdentityKey
         defer {
-            isEditingTitle = false
+            renamingIdentityKey = nil
             focusedRenameID = false
-            syncRenameText()
+            renameText = ""
         }
-        guard let key = activeDevice?.identityKey else { return }
+        guard let key else { return }
         let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if trimmed != activeDevice?.name {
+        let current = appState.devices.first(where: { $0.identityKey == key })?.name
+        if trimmed != current {
             appState.setDisplayName(forIdentity: key, name: trimmed)
         }
     }
@@ -529,6 +590,13 @@ private struct OutputEQPanel: View {
         mapping.profileFilename != nil
     }
 
+    /// Same animated blob as the menu-bar icon — only for the live system output while EQ is engaged.
+    private var isLiveEQBlob: Bool {
+        hasProfile
+            && appState.isEQEngaged
+            && identityKey == appState.defaultIdentityKey
+    }
+
     private var profileTitle: String {
         guard let filename = mapping.profileFilename else { return "No Profile" }
         if let profile = profiles.first(where: { $0.filename == filename }) {
@@ -563,6 +631,27 @@ private struct OutputEQPanel: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
         }
+        .onAppear {
+            expandOtherProfilesWhenNoProfile(animated: false)
+        }
+        .onChange(of: mapping.profileFilename) { _, filename in
+            if filename == nil {
+                expandOtherProfilesWhenNoProfile(animated: true)
+            }
+        }
+    }
+
+    private func expandOtherProfilesWhenNoProfile(animated: Bool) {
+        guard mapping.profileFilename == nil, otherProfilesProgress < 0.5 else { return }
+        let listHeight = OutputEQPanelMetrics.otherProfilesListHeight(count: otherProfiles.count + 1)
+        if animated {
+            onToggleOtherProfiles(listHeight)
+            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+                otherProfilesProgress = 1
+            }
+        } else {
+            otherProfilesProgress = 1
+        }
     }
 
     private var activeProfileSection: some View {
@@ -577,6 +666,7 @@ private struct OutputEQPanel: View {
                 title: profileTitle,
                 accent: accent,
                 hasProfile: hasProfile,
+                animatesBlob: isLiveEQBlob,
                 showColorPicker: showColorPicker,
                 colorPicker: { colorPopover }
             ) {
@@ -728,9 +818,11 @@ private enum ControlCenterTrailing {
 }
 
 private struct ActiveProfileRow<ColorPicker: View>: View {
+    @EnvironmentObject private var appState: AppState
     let title: String
     let accent: Color
     let hasProfile: Bool
+    var animatesBlob: Bool = false
     @Binding var showColorPicker: Bool
     @ViewBuilder let colorPicker: () -> ColorPicker
     let onDeselect: () -> Void
@@ -743,9 +835,26 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                 guard hasProfile else { return }
                 showColorPicker = true
             } label: {
-                Circle()
-                    .fill(hasProfile ? accent : Color.primary.opacity(0.12))
-                    .frame(width: 22, height: 22)
+                Group {
+                    if animatesBlob {
+                        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                            let level = CGFloat(appState.audioEngine.outputLevel)
+                            let phase = CGFloat(timeline.date.timeIntervalSinceReferenceDate)
+                                * (2.2 + Double(level) * 4)
+                            AnimatedEQBlobView(
+                                color: accent,
+                                level: level,
+                                phase: CGFloat(phase),
+                                size: 22
+                            )
+                        }
+                    } else {
+                        Circle()
+                            .fill(hasProfile ? accent : Color.primary.opacity(0.12))
+                            .frame(width: 22, height: 22)
+                    }
+                }
+                .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
             .disabled(!hasProfile)
@@ -775,6 +884,37 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
             isHovering = hovering && hasProfile
         }
         .focusEffectDisabled()
+    }
+}
+
+/// Menu-popover twin of the status-item blob (same geometry as `EQBlob` / menu bar icon).
+private struct AnimatedEQBlobView: View {
+    let color: Color
+    let level: CGFloat
+    let phase: CGFloat
+    let size: CGFloat
+
+    var body: some View {
+        Canvas { context, canvasSize in
+            let inset: CGFloat = 1
+            let draw = CGRect(origin: .zero, size: canvasSize).insetBy(dx: inset, dy: inset)
+            let center = CGPoint(x: draw.midX, y: draw.midY)
+            let radius = min(draw.width, draw.height) / 2 * 0.92
+            let path = EQBlob.swiftUIPath(
+                center: center,
+                radius: radius,
+                level: level,
+                phase: phase
+            )
+            // Soft halo like the status item when engaged.
+            context.stroke(
+                path,
+                with: .color(Color.primary.opacity(0.22)),
+                lineWidth: 2.2
+            )
+            context.fill(path, with: .color(color))
+        }
+        .frame(width: size, height: size)
     }
 }
 

@@ -24,6 +24,9 @@ public final class AppState: ObservableObject {
     /// TCC dialog in flight — don't stack prompts or start a mute tap underneath it.
     private var audioPermissionPromptInFlight = false
     private var didPromptUndeterminedAudioPermission = false
+    /// Suppress output-change EQ banners until the launch notification has been considered.
+    private var eqStatusNotificationsReady = false
+    private var lastEQStatusNotifiedIdentityKey: String?
 
     public init(
         profileStore: ProfileStore = ProfileStore(),
@@ -51,7 +54,14 @@ public final class AppState: ObservableObject {
     /// Call once the app has finished launching (and preferably after `NSApp.activate`).
     public func startEngineAfterLaunch() {
         engineSyncEnabled = true
+        EQStatusNotifier.shared.requestAuthorizationIfNeeded()
+        // After activation: resolve the real default output and touch every profile
+        // folder now so Files & Folders prompts happen at launch, not on first menu click.
+        refreshAll()
+        warmProfileFolderAccess()
         restoreEngineIfNeeded()
+        notifyActiveEQStatus(reason: .launch)
+        eqStatusNotificationsReady = true
 
         // Core Audio process taps are often not ready on the first try.
         let delays: [TimeInterval] = [0.25, 0.8, 1.8, 3.5]
@@ -59,6 +69,34 @@ public final class AppState: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.restoreEngineIfNeeded()
             }
+        }
+    }
+
+    /// Force-access default + per-output profile directories (and the active profile file).
+    /// macOS Files & Folders TCC often won’t sheet until the app is activated; doing this
+    /// here keeps the prompt at launch instead of the first menu-bar click.
+    public func warmProfileFolderAccess() {
+        profileStore.ensureProfilesDirectoryExists()
+        _ = profileStore.listProfiles()
+
+        var folders: Set<String> = [profileStore.profilesDirectory.path]
+        for key in config.outputs.keys {
+            folders.insert(profilesDirectoryURL(forIdentity: key).path)
+        }
+        if let defaultIdentityKey {
+            folders.insert(profilesDirectoryURL(forIdentity: defaultIdentityKey).path)
+        }
+
+        for path in folders {
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            _ = profileStore.listProfiles(in: url)
+        }
+
+        // Reading the active profile file also triggers access for that directory.
+        if let key = defaultIdentityKey,
+           let filename = config.mapping(forIdentity: key).profileFilename {
+            let fileURL = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
+            _ = try? Data(contentsOf: fileURL, options: [.mappedIfSafe])
         }
     }
 
@@ -114,6 +152,7 @@ public final class AppState: ObservableObject {
     }
 
     public func refreshAll() {
+        let previousDefaultKey = defaultIdentityKey
         let live = deviceService.outputDevices()
         profileStore.ensureProfilesDirectoryExists()
 
@@ -147,6 +186,41 @@ public final class AppState: ObservableObject {
         if engineSyncEnabled {
             syncEngine()
         }
+
+        if eqStatusNotificationsReady, previousDefaultKey != defaultIdentityKey {
+            notifyActiveEQStatus(reason: .outputChanged)
+        }
+    }
+
+    private enum EQStatusNotifyReason {
+        case launch
+        case outputChanged
+    }
+
+    /// Banner when the system default output has a selected profile (launch / output switch).
+    private func notifyActiveEQStatus(reason: EQStatusNotifyReason) {
+        guard let key = defaultIdentityKey else { return }
+        let mapping = config.mapping(forIdentity: key)
+        guard let filename = mapping.profileFilename else {
+            lastEQStatusNotifiedIdentityKey = key
+            return
+        }
+        if reason == .outputChanged, key == lastEQStatusNotifiedIdentityKey {
+            return
+        }
+        lastEQStatusNotifiedIdentityKey = key
+
+        let outputName = devices.first(where: { $0.identityKey == key })?.name
+            ?? config.knownOutputs[key]?.displayName
+            ?? "Output"
+        let profileName = profiles.first(where: { $0.filename == filename })?.displayName
+            ?? (filename as NSString).deletingPathExtension
+
+        EQStatusNotifier.shared.notifyActiveEQ(
+            outputName: outputName,
+            profileDisplayName: profileName,
+            colorHex: config.colorHex(forProfile: filename)
+        )
     }
 
     /// Folder of `.txt` profiles for a given output (`nil` path → default App Support folder).

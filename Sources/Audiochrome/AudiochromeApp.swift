@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let state = AppState()
         appState = state
+        EQStatusNotifier.shared.configure()
         statusBar = StatusBarController(appState: state)
 
         // Process taps / AudioDeviceStart are unreliable before the app has activated.

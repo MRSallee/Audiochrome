@@ -317,8 +317,7 @@ enum StatusIconImage {
             : .black
 
         // Silence → circle; audio → organic blob (logo silhouette).
-        let blob = blobPath(center: center, radius: radius, level: level, phase: phase)
-        blob.lineJoinStyle = .round
+        let blob = EQBlob.bezierPath(center: center, radius: radius, level: level, phase: phase)
 
         if isEngaged {
             let halo = darkBar
@@ -337,48 +336,7 @@ enum StatusIconImage {
         return image
     }
 
-    /// Filled path: perfect circle at level 0, logo-like irregular perimeter as level rises.
-    private static func blobPath(
-        center: CGPoint,
-        radius: CGFloat,
-        level: CGFloat,
-        phase: CGFloat
-    ) -> NSBezierPath {
-        let amount = max(0, min(1, level))
-        // Below a small floor stay circular so idle EQ-on reads as a clean disc.
-        let wobble = amount < 0.04 ? 0 : amount
-
-        if wobble < 0.001 {
-            return NSBezierPath(ovalIn: CGRect(
-                x: center.x - radius,
-                y: center.y - radius,
-                width: radius * 2,
-                height: radius * 2
-            ))
-        }
-
-        let path = NSBezierPath()
-        let steps = 72
-        let p = Double(phase)
-        for i in 0...steps {
-            let t = Double(i) / Double(steps) * Double.pi * 2
-            // Multi-harmonic edge — closer to the jagged logo blob than a simple sine ring.
-            let edge =
-                0.42 * sin(6 * t + p) +
-                0.28 * sin(11 * t - p * 1.4) +
-                0.18 * sin(17 * t + p * 0.6) +
-                0.12 * sin(3 * t + p * 2.2)
-            let r = radius * (1 + Double(wobble) * 0.32 * edge)
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(t) * r),
-                y: center.y + CGFloat(sin(t) * r)
-            )
-            if i == 0 { path.move(to: point) } else { path.line(to: point) }
-        }
-        path.close()
-        return path
-    }
-
+    /// Status items briefly report a light default appearance before attaching to the menu bar.
     private static func isDarkMenuBar(_ appearance: NSAppearance?) -> Bool {
         isDark(appearance ?? NSApp.effectiveAppearance)
     }

@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v0.5** — Control Center–style menu bar UI, per-output EQ profiles (Squiglink/APO), and Core Audio process-tap EQ (macOS 14.2+).  
+> **v0.6** — Shared output headers with rename, EQ status notifications, launch-time profile folder access, animated EQ blob, and packaging/codesign fixes for notifications.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
