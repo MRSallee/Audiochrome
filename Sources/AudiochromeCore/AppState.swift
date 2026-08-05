@@ -28,6 +28,9 @@ public final class AppState: ObservableObject {
     private var eqStatusNotificationsReady = false
     private var lastEQStatusNotifiedIdentityKey: String?
 
+    /// Invoked before system sheets/panels (e.g. Change Folder) so the menu can dismiss.
+    public var onWillPresentModal: (() -> Void)?
+
     public init(
         profileStore: ProfileStore = ProfileStore(),
         configStore: ConfigStore = ConfigStore(),
@@ -188,6 +191,8 @@ public final class AppState: ObservableObject {
         }
 
         if eqStatusNotificationsReady, previousDefaultKey != defaultIdentityKey {
+            // Drop the previous output’s banner first; post again only if this one has a profile.
+            EQStatusNotifier.shared.clearActiveEQ()
             notifyActiveEQStatus(reason: .outputChanged)
         }
     }
@@ -197,11 +202,12 @@ public final class AppState: ObservableObject {
         case outputChanged
     }
 
-    /// Banner when the system default output has a selected profile (launch / output switch).
+    /// Banner when EQ is actively engaged on the system default output (launch / output switch).
     private func notifyActiveEQStatus(reason: EQStatusNotifyReason) {
         guard let key = defaultIdentityKey else { return }
         let mapping = config.mapping(forIdentity: key)
-        guard let filename = mapping.profileFilename else {
+        // Remind only when EQ is on — profile selected and enabled.
+        guard mapping.enabled, let filename = mapping.profileFilename else {
             lastEQStatusNotifiedIdentityKey = key
             return
         }
@@ -215,12 +221,26 @@ public final class AppState: ObservableObject {
             ?? "Output"
         let profileName = profiles.first(where: { $0.filename == filename })?.displayName
             ?? (filename as NSString).deletingPathExtension
+        let folderName = profilesDirectoryURL(forIdentity: key).lastPathComponent
 
-        EQStatusNotifier.shared.notifyActiveEQ(
-            outputName: outputName,
-            profileDisplayName: profileName,
-            colorHex: config.colorHex(forProfile: filename)
-        )
+        let colorHex = config.colorHex(forProfile: filename)
+        switch reason {
+        case .launch:
+            // Give notification auth a beat so the first banner isn’t dropped.
+            EQStatusNotifier.shared.notifyActiveEQAfterLaunch(
+                outputName: outputName,
+                profileDisplayName: profileName,
+                folderName: folderName,
+                colorHex: colorHex
+            )
+        case .outputChanged:
+            EQStatusNotifier.shared.notifyActiveEQ(
+                outputName: outputName,
+                profileDisplayName: profileName,
+                folderName: folderName,
+                colorHex: colorHex
+            )
+        }
     }
 
     /// Folder of `.txt` profiles for a given output (`nil` path → default App Support folder).
@@ -248,11 +268,13 @@ public final class AppState: ObservableObject {
         var mapping = config.mapping(forIdentity: identityKey)
         mapping.profilesDirectoryPath = url.path
 
-        let available = profileStore.listProfiles(in: url)
-        if let current = mapping.profileFilename,
-           !available.contains(where: { $0.filename == current }) {
-            mapping.profileFilename = nil
-            mapping.enabled = false
+        // Drop the selection only when that profile file isn’t in the new folder.
+        if let current = mapping.profileFilename {
+            let fileURL = url.appendingPathComponent(current)
+            if !FileManager.default.fileExists(atPath: fileURL.path) {
+                mapping.profileFilename = nil
+                mapping.enabled = false
+            }
         }
 
         config.setMapping(mapping, forIdentity: identityKey)
@@ -261,8 +283,20 @@ public final class AppState: ObservableObject {
         forceEngineResync()
     }
 
+    /// Inactive outputs stay listed when they have a profile or a custom profiles folder
+    /// (so Change Folder doesn’t yank the row if the selection is cleared).
+    public func shouldListInactiveOutput(_ identityKey: String) -> Bool {
+        let mapping = config.mapping(forIdentity: identityKey)
+        if mapping.profileFilename != nil { return true }
+        let path = mapping.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !path.isEmpty
+    }
+
     /// Lets the user pick which folder supplies EQ profiles for this output.
     public func chooseProfilesFolder(forIdentity identityKey: String) {
+        // Status menu is `.popUpMenu` — dismiss it and raise the open panel above that level.
+        onWillPresentModal?()
+
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -271,6 +305,8 @@ public final class AppState: ObservableObject {
         panel.directoryURL = profilesDirectoryURL(forIdentity: identityKey)
         panel.message = "Choose a folder of EQ profiles for this output"
         panel.prompt = "Choose"
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         setProfilesDirectory(forIdentity: identityKey, url: url)
     }

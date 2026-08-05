@@ -22,6 +22,9 @@ struct MenuBarView: View {
     /// until the menu closes, so deselecting doesn’t yank the row mid-edit.
     @State private var pinnedOtherDeviceKeys: Set<String> = []
 
+    /// 1 = “Other Devices” (unequalized outputs) disclosure open.
+    @State private var otherDevicesListProgress: CGFloat = 0
+
     @State private var colorPickerIdentityKey: String?
     @State private var renamingIdentityKey: String?
     @State private var renameText = ""
@@ -35,8 +38,18 @@ struct MenuBarView: View {
     private var otherDevices: [AudioOutputDevice] {
         appState.devices.filter { device in
             guard !device.isDefault else { return false }
-            let hasProfile = appState.config.mapping(forIdentity: device.identityKey).profileFilename != nil
-            return hasProfile || pinnedOtherDeviceKeys.contains(device.identityKey)
+            return appState.shouldListInactiveOutput(device.identityKey)
+                || pinnedOtherDeviceKeys.contains(device.identityKey)
+        }
+    }
+
+    /// Connected outputs with no EQ mapping yet — reachable via “Other Devices”.
+    private var unlistedDevices: [AudioOutputDevice] {
+        appState.devices.filter { device in
+            guard !device.isDefault else { return false }
+            let listed = appState.shouldListInactiveOutput(device.identityKey)
+                || pinnedOtherDeviceKeys.contains(device.identityKey)
+            return !listed
         }
     }
 
@@ -71,33 +84,39 @@ struct MenuBarView: View {
             }
 
             if !otherDevices.isEmpty {
-                Divider().padding(.horizontal, 12)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
             }
 
             ForEach(otherDevices, id: \.identityKey) { device in
                 otherDeviceSection(device)
                 if device.identityKey != otherDevices.last?.identityKey {
-                    Divider().padding(.horizontal, 12)
+                    Divider().padding(.horizontal, MenuChrome.dividerInset)
                 }
             }
 
+            if !unlistedDevices.isEmpty {
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
+                otherDevicesDisclosure
+            }
+
             if appState.needsAudioPermission {
-                Divider().padding(.horizontal, 12)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
                 permissionBanner
             }
 
-            Divider().padding(.horizontal, 12)
+            Divider().padding(.horizontal, MenuChrome.dividerInset)
 
-            ControlCenterRow(title: "Settings…") {
-                // Placeholder — hierarchy first; settings UI later.
-            }
-            .padding(.horizontal, 6)
+            VStack(alignment: .leading, spacing: 0) {
+                ControlCenterRow(title: "Settings…", style: .command) {
+                    // Placeholder — hierarchy first; settings UI later.
+                }
 
-            ControlCenterRow(title: "Quit") {
-                appState.quit()
+                ControlCenterRow(title: "Quit", style: .command) {
+                    appState.quit()
+                }
             }
-            .padding(.horizontal, 6)
-            .padding(.bottom, 6)
+            .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
+            .padding(.bottom, MenuChrome.menuPadding)
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .focusEffectDisabled()
@@ -123,10 +142,16 @@ struct MenuBarView: View {
                 focusActiveOutput(animated: true)
             }
         }
+        .onChange(of: unlistedDevices.count) { _, count in
+            if count == 0, otherDevicesListProgress > 0.01 {
+                otherDevicesListProgress = 0
+            }
+        }
     }
 
     private func beginPopoverSession() {
         pinOtherDevicesWithProfiles(reset: true)
+        otherDevicesListProgress = 0
         focusActiveOutput(animated: false)
     }
 
@@ -139,7 +164,7 @@ struct MenuBarView: View {
                     device,
                     isFocused: isActivePanelVisible,
                     accent: activeAccent,
-                    topPadding: 12,
+                    topPadding: MenuChrome.menuPadding,
                     onToggleExpand: {
                         if renamingIdentityKey != nil {
                             commitRename()
@@ -150,11 +175,11 @@ struct MenuBarView: View {
                 )
             } else {
                 Text("No Output")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
                     .foregroundStyle(.primary)
-                    .padding(.horizontal, 14)
-                    .padding(.top, 12)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, MenuChrome.contentInset)
+                    .padding(.top, MenuChrome.menuPadding)
+                    .padding(.bottom, MenuChrome.headerVerticalPadding)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -164,7 +189,7 @@ struct MenuBarView: View {
         _ device: AudioOutputDevice,
         isFocused: Bool,
         accent: Color,
-        topPadding: CGFloat = 10,
+        topPadding: CGFloat = MenuChrome.headerVerticalPadding,
         onToggleExpand: @escaping () -> Void
     ) -> some View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
@@ -174,7 +199,7 @@ struct MenuBarView: View {
             // Empty header area expands/collapses (and dismisses a sticky rename).
             Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: 22)
+                .frame(minHeight: MenuChrome.textRowContentHeight)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onToggleExpand)
 
@@ -187,15 +212,14 @@ struct MenuBarView: View {
             )
             .labelsHidden()
             .toggleStyle(.switch)
-            .controlSize(.small)
             .focusEffectDisabled()
             .focusable(false)
             .disabled(mapping.profileFilename == nil)
             .tint(accent)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, MenuChrome.contentInset)
         .padding(.top, topPadding)
-        .padding(.bottom, 10)
+        .padding(.bottom, MenuChrome.headerVerticalPadding)
     }
 
     @ViewBuilder
@@ -207,28 +231,27 @@ struct MenuBarView: View {
         if isRenaming, isFocused {
             TextField("Name", text: $renameText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
                 .focused($focusedRenameID)
                 .onSubmit { commitRename() }
                 .onChange(of: focusedRenameID) { _, focused in
                     if !focused { commitRename() }
                 }
                 .onAppear { focusedRenameID = true }
-                .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
         } else {
             Text(device.name)
-                .font(.system(size: 13, weight: isFocused ? .semibold : .regular))
+                .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
                 .foregroundStyle(isFocused ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .background(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Color.primary.opacity(isHovering && isFocused ? 0.05 : 0))
+                        .padding(.horizontal, -4)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -236,6 +259,7 @@ struct MenuBarView: View {
                             Color.secondary.opacity(isHovering && isFocused ? 0.35 : 0),
                             lineWidth: 1
                         )
+                        .padding(.horizontal, -4)
                 )
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
@@ -307,6 +331,66 @@ struct MenuBarView: View {
         }
     }
 
+    /// Unequalized outputs (Wi‑Fi–style “Other Networks”).
+    private var otherDevicesDisclosure: some View {
+        let count = unlistedDevices.count
+        let scrollHeight = UnlistedDevicesMetrics.scrollHeight(count: count)
+        let bodyHeight = UnlistedDevicesMetrics.bodyHeight(count: count)
+        let needsScroll = count > UnlistedDevicesMetrics.maxVisibleRows
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ControlCenterRow(
+                title: "Other Devices",
+                style: .disclosure,
+                trailing: otherDevicesListProgress > 0.5 ? .chevronDown : .chevronRight
+            ) {
+                let expanding = otherDevicesListProgress < 0.5
+                let target: CGFloat = expanding ? 1 : 0
+                let delta = (target - otherDevicesListProgress) * bodyHeight
+                popoverChrome.animateDisclosure(deltaHeight: delta)
+                withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+                    otherDevicesListProgress = target
+                }
+            }
+
+            ScrollView(.vertical, showsIndicators: needsScroll) {
+                VStack(alignment: .leading, spacing: UnlistedDevicesMetrics.rowSpacing) {
+                    ForEach(unlistedDevices, id: \.identityKey) { device in
+                        ControlCenterRow(title: device.name, style: .listItem) {
+                            selectUnlistedDevice(device)
+                        }
+                    }
+                }
+            }
+            .frame(height: otherDevicesListProgress * scrollHeight, alignment: .top)
+            .scrollBounceBehavior(.basedOnSize)
+            .clipped()
+            .opacity(otherDevicesListProgress)
+            .allowsHitTesting(otherDevicesListProgress > 0.98)
+        }
+        // Match Other Profiles section chrome (padding above/below the disclosure).
+        .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
+    }
+
+    private func selectUnlistedDevice(_ device: AudioOutputDevice) {
+        let collapseHeight =
+            otherDevicesListProgress * UnlistedDevicesMetrics.bodyHeight(count: unlistedDevices.count)
+
+        if otherDevicesListProgress > 0.01 {
+            popoverChrome.animateDisclosure(deltaHeight: -collapseHeight)
+            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+                otherDevicesListProgress = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
+                pinnedOtherDeviceKeys.insert(device.identityKey)
+                focusOtherDevice(device, animated: true)
+            }
+        } else {
+            pinnedOtherDeviceKeys.insert(device.identityKey)
+            focusOtherDevice(device, animated: true)
+        }
+    }
+
     private func otherDeviceHeader(
         _ device: AudioOutputDevice,
         mapping: OutputMapping,
@@ -316,7 +400,7 @@ struct MenuBarView: View {
             device,
             isFocused: isExpanded,
             accent: Color(nsColor: .systemGray),
-            topPadding: 10,
+            topPadding: MenuChrome.headerVerticalPadding,
             onToggleExpand: {
                 if renamingIdentityKey != nil {
                     commitRename()
@@ -463,25 +547,24 @@ struct MenuBarView: View {
                     .controlSize(.small)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, MenuChrome.contentInset)
+        .padding(.vertical, MenuChrome.headerVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.orange.opacity(0.12))
     }
 
     private func pinOtherDevicesWithProfiles(reset: Bool) {
-        let profiled = Set(
+        let configured = Set(
             appState.devices.compactMap { device -> String? in
                 guard !device.isDefault else { return nil }
-                guard appState.config.mapping(forIdentity: device.identityKey).profileFilename != nil
-                else { return nil }
+                guard appState.shouldListInactiveOutput(device.identityKey) else { return nil }
                 return device.identityKey
             }
         )
         if reset {
-            pinnedOtherDeviceKeys = profiled
+            pinnedOtherDeviceKeys = configured
         } else {
-            pinnedOtherDeviceKeys.formUnion(profiled)
+            pinnedOtherDeviceKeys.formUnion(configured)
         }
     }
 
@@ -519,15 +602,102 @@ struct MenuBarView: View {
     }
 }
 
+// MARK: - Wi‑Fi / Control Center chrome metrics
+
+private enum MenuChrome {
+    static let contentInset: CGFloat = 16
+    static let dividerInset: CGFloat = 16
+    static let menuPadding: CGFloat = 10
+    static let headerVerticalPadding: CGFloat = 10
+    static let sectionTopPadding: CGFloat = 8
+    static let sectionToContentSpacing: CGFloat = 6
+    static let waveformSpacing: CGFloat = 6
+    static let waveformBottomPadding: CGFloat = 8
+    static let noProfileBottomPadding: CGFloat = 8
+    static let otherProfilesSectionVerticalPadding: CGFloat = 6
+
+    static let headerFontSize: CGFloat = 13
+    static let bodyFontSize: CGFloat = 13
+    /// Sub-header (“Active Profile”) and expanding headers (“Other Profiles”).
+    static let sectionFontSize: CGFloat = 12
+    static let headerWeight: Font.Weight = .bold
+    static let sectionWeight: Font.Weight = .bold
+    /// Regular — medium still read as bold next to Apple’s list rows.
+    static let bodyWeight: Font.Weight = .regular
+
+    static var headerFont: Font { .system(size: headerFontSize, weight: headerWeight) }
+    static var sectionFont: Font { .system(size: sectionFontSize, weight: sectionWeight) }
+    /// Bridged through AppKit so macOS `Button` chrome can’t promote the weight.
+    static var bodyFont: Font {
+        Font(NSFont.systemFont(ofSize: bodyFontSize, weight: .regular))
+    }
+
+    static let textRowContentHeight: CGFloat = 20
+    static let textRowHeight: CGFloat = 28
+    static let iconRowHeight: CGFloat = 34
+    static let sectionRowHeight: CGFloat = 24
+
+    static let featuredIconSize: CGFloat = 26
+    static let listIconSize: CGFloat = 18
+    static let chevronSize: CGFloat = 10
+    static let waveformHeight: CGFloat = 28
+
+    static var highlightInset: CGFloat {
+        if #available(macOS 26, *) { return 8 }
+        return 5
+    }
+
+    static var highlightCornerRadius: CGFloat {
+        if #available(macOS 26, *) { return 10 }
+        return 5
+    }
+}
+
 // MARK: - EQ panel (identical for active + inactive outputs)
 
+private enum UnlistedDevicesMetrics {
+    /// Match Other Profiles list rows (`iconRowHeight`), not footer command rows.
+    static let rowHeight: CGFloat = MenuChrome.iconRowHeight
+    static let rowSpacing: CGFloat = OutputEQPanelMetrics.disclosureRowSpacing
+    static let maxVisibleRows = 7
+
+    static func scrollHeight(count: Int) -> CGFloat {
+        let visible = min(max(0, count), maxVisibleRows)
+        guard visible > 0 else { return 0 }
+        return CGFloat(visible) * rowHeight + CGFloat(max(0, visible - 1)) * rowSpacing
+    }
+
+    static func bodyHeight(count: Int) -> CGFloat {
+        scrollHeight(count: count)
+    }
+}
+
 private enum OutputEQPanelMetrics {
-    static let disclosureRowHeight: CGFloat = 34
+    static let disclosureRowHeight: CGFloat = MenuChrome.sectionRowHeight
+    static let iconRowHeight: CGFloat = MenuChrome.iconRowHeight
+    static let textRowHeight: CGFloat = MenuChrome.textRowHeight
     static let disclosureRowSpacing: CGFloat = 2
+    /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
+    static let maxVisibleOtherProfileRows = 7
 
     static func otherProfilesListHeight(count: Int) -> CGFloat {
-        let c = CGFloat(count)
-        return c * disclosureRowHeight + max(0, c - 1) * disclosureRowSpacing
+        let c = CGFloat(max(0, count))
+        guard c > 0 else { return 0 }
+        return c * iconRowHeight + max(0, c - 1) * disclosureRowSpacing
+    }
+
+    /// Scrollable profile rows only (Change Folder sits sticky beneath).
+    static func otherProfilesScrollHeight(profileCount: Int) -> CGFloat {
+        otherProfilesListHeight(count: min(profileCount, maxVisibleOtherProfileRows))
+    }
+
+    /// Expanded disclosure body: scrolling profiles + sticky Change Folder.
+    static func otherProfilesExpandedBodyHeight(profileCount: Int) -> CGFloat {
+        let scroll = otherProfilesScrollHeight(profileCount: profileCount)
+        if scroll <= 0 {
+            return textRowHeight
+        }
+        return scroll + disclosureRowSpacing + textRowHeight
     }
 
     @MainActor
@@ -548,20 +718,20 @@ private enum OutputEQPanelMetrics {
         }
 
         // Active Profile block — matches OutputEQPanel layout.
-        height += 8 // heading top pad
-        height += 15 // heading
-        height += 8 // spacing
-        height += 34 // profile row
+        height += MenuChrome.sectionTopPadding
+        height += MenuChrome.sectionRowHeight
+        height += MenuChrome.sectionToContentSpacing
+        height += iconRowHeight
         if hasProfile {
-            height += 8 + 28 + 10 // spacing + curve + bottom
+            height += MenuChrome.waveformSpacing + MenuChrome.waveformHeight + MenuChrome.waveformBottomPadding
         } else {
-            height += 10
+            height += MenuChrome.noProfileBottomPadding
         }
 
-        height += 6 // other-profiles section vertical pad top
+        height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // “Other Profiles” header
-        height += otherProfilesProgress * otherProfilesListHeight(count: otherCount + 1)
-        height += 6 // vertical pad bottom
+        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
+        height += MenuChrome.otherProfilesSectionVerticalPadding
         return height
     }
 }
@@ -622,30 +792,38 @@ private struct OutputEQPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if showsLeadingDivider {
-                Divider().padding(.horizontal, 12)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
             }
 
             activeProfileSection
 
             otherProfilesSection
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
         }
         .onAppear {
             expandOtherProfilesWhenNoProfile(animated: false)
         }
-        .onChange(of: mapping.profileFilename) { _, filename in
+        .onChange(of: mapping.profileFilename) { oldFilename, filename in
             if filename == nil {
-                expandOtherProfilesWhenNoProfile(animated: true)
+                if otherProfilesProgress < 0.5 {
+                    expandOtherProfilesWhenNoProfile(animated: true)
+                } else {
+                    // List already open — still need to animate waveform out / row back in.
+                    animateProfilePresenceHeightChange(fromNoProfile: false)
+                }
+            } else if oldFilename == nil {
+                // No Profile → selection: waveform in, one other-profile row out.
+                animateProfilePresenceHeightChange(fromNoProfile: true)
             }
         }
     }
 
     private func expandOtherProfilesWhenNoProfile(animated: Bool) {
         guard mapping.profileFilename == nil, otherProfilesProgress < 0.5 else { return }
-        let listHeight = OutputEQPanelMetrics.otherProfilesListHeight(count: otherProfiles.count + 1)
+        let listHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: otherProfiles.count)
+        let delta = (1 - otherProfilesProgress) * listHeight
         if animated {
-            onToggleOtherProfiles(listHeight)
+            onToggleOtherProfiles(delta)
             withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
                 otherProfilesProgress = 1
             }
@@ -654,13 +832,50 @@ private struct OutputEQPanel: View {
         }
     }
 
+    /// Keep panel height in sync when Active Profile appears/disappears while Other Profiles stays expanded.
+    private func animateProfilePresenceHeightChange(fromNoProfile: Bool) {
+        let afterOtherCount = otherProfiles.count
+        let beforeOtherCount = fromNoProfile ? afterOtherCount + 1 : max(0, afterOtherCount - 1)
+        let beforeHasProfile = !fromNoProfile
+        let afterHasProfile = fromNoProfile
+
+        let progress = otherProfilesProgress
+        let activeDelta =
+            Self.activeProfileBlockHeight(hasProfile: afterHasProfile)
+            - Self.activeProfileBlockHeight(hasProfile: beforeHasProfile)
+        let otherDelta = progress * (
+            OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: afterOtherCount)
+            - OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: beforeOtherCount)
+        )
+        let delta = activeDelta + otherDelta
+        guard abs(delta) > 0.5 else { return }
+        onToggleOtherProfiles(delta)
+    }
+
+    private static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
+        // Must match OutputEQPanelMetrics / activeProfileSection layout.
+        var height: CGFloat =
+            MenuChrome.sectionTopPadding
+            + MenuChrome.sectionRowHeight
+            + MenuChrome.sectionToContentSpacing
+            + MenuChrome.iconRowHeight
+        if hasProfile {
+            height += MenuChrome.waveformSpacing + MenuChrome.waveformHeight + MenuChrome.waveformBottomPadding
+        } else {
+            height += MenuChrome.noProfileBottomPadding
+        }
+        return height
+    }
+
     private var activeProfileSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: MenuChrome.sectionToContentSpacing) {
             Text("Active Profile")
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuChrome.sectionFont)
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: MenuChrome.sectionRowHeight, alignment: .leading)
+                .padding(.horizontal, MenuChrome.contentInset)
+                .padding(.top, MenuChrome.sectionTopPadding)
 
             ActiveProfileRow(
                 title: profileTitle,
@@ -673,32 +888,36 @@ private struct OutputEQPanel: View {
                 guard hasProfile else { return }
                 appState.setProfile(forIdentity: identityKey, filename: nil)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, hasProfile ? 0 : 10)
+            .padding(.bottom, hasProfile ? 0 : MenuChrome.noProfileBottomPadding)
 
             if hasProfile {
                 ProfileWaveformView(
                     magnitudesDB: appState.eqFrequencyResponse(forIdentity: identityKey),
                     color: accent
                 )
-                .frame(height: 28)
-                .padding(.horizontal, 14)
-                .padding(.bottom, 10)
+                .frame(height: MenuChrome.waveformHeight)
+                .padding(.horizontal, MenuChrome.contentInset)
+                .padding(.top, MenuChrome.waveformSpacing - MenuChrome.sectionToContentSpacing)
+                .padding(.bottom, MenuChrome.waveformBottomPadding)
             }
         }
     }
 
     private var otherProfilesSection: some View {
-        let listHeight = OutputEQPanelMetrics.otherProfilesListHeight(count: otherProfiles.count + 1)
-        return VStack(alignment: .leading, spacing: 2) {
+        let profileCount = otherProfiles.count
+        let scrollHeight = OutputEQPanelMetrics.otherProfilesScrollHeight(profileCount: profileCount)
+        let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: profileCount)
+        let needsScroll = profileCount > OutputEQPanelMetrics.maxVisibleOtherProfileRows
+
+        return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
                 title: "Other Profiles",
-                titleWeight: .semibold,
+                style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
                 let expanding = otherProfilesProgress < 0.5
                 let target: CGFloat = expanding ? 1 : 0
-                let delta = (target - otherProfilesProgress) * listHeight
+                let delta = (target - otherProfilesProgress) * bodyHeight
                 onToggleOtherProfiles(delta)
                 withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
                     otherProfilesProgress = target
@@ -706,21 +925,29 @@ private struct OutputEQPanel: View {
             }
 
             VStack(alignment: .leading, spacing: OutputEQPanelMetrics.disclosureRowSpacing) {
-                ForEach(otherProfiles) { profile in
-                    OtherProfileRow(
-                        profile: profile,
-                        color: appState.colorHex(forProfile: profile.filename).asHexColor
-                    ) {
-                        appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                if scrollHeight > 0 {
+                    ScrollView(.vertical, showsIndicators: needsScroll) {
+                        VStack(alignment: .leading, spacing: OutputEQPanelMetrics.disclosureRowSpacing) {
+                            ForEach(otherProfiles) { profile in
+                                OtherProfileRow(
+                                    profile: profile,
+                                    color: appState.colorHex(forProfile: profile.filename).asHexColor
+                                ) {
+                                    appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                                }
+                            }
+                        }
                     }
-                    .frame(height: OutputEQPanelMetrics.disclosureRowHeight, alignment: .leading)
+                    .frame(height: scrollHeight, alignment: .top)
+                    .scrollBounceBehavior(.basedOnSize)
                 }
-                ControlCenterRow(title: "Change Folder…") {
+
+                // Sticky under the scrolling list (Wi‑Fi–style).
+                ControlCenterRow(title: "Change Folder…", style: .command) {
                     appState.chooseProfilesFolder(forIdentity: identityKey)
                 }
-                .frame(height: OutputEQPanelMetrics.disclosureRowHeight, alignment: .leading)
             }
-            .frame(height: otherProfilesProgress * listHeight, alignment: .top)
+            .frame(height: otherProfilesProgress * bodyHeight, alignment: .top)
             .clipped()
             .opacity(otherProfilesProgress)
             .allowsHitTesting(otherProfilesProgress > 0.98)
@@ -817,6 +1044,15 @@ private enum ControlCenterTrailing {
     case chevronDown
 }
 
+private enum ControlCenterRowStyle {
+    /// Footer / Change Folder — 13 regular, text-only height.
+    case command
+    /// Other Devices list rows — same height as Other Profiles items.
+    case listItem
+    /// “Other Profiles” / “Other Devices” — 12 bold secondary + chevron.
+    case disclosure
+}
+
 private struct ActiveProfileRow<ColorPicker: View>: View {
     @EnvironmentObject private var appState: AppState
     let title: String
@@ -830,55 +1066,59 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button {
-                guard hasProfile else { return }
-                showColorPicker = true
-            } label: {
-                Group {
-                    if animatesBlob {
-                        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                            let level = CGFloat(appState.audioEngine.outputLevel)
-                            let phase = CGFloat(timeline.date.timeIntervalSinceReferenceDate)
-                                * (2.2 + Double(level) * 4)
-                            AnimatedEQBlobView(
-                                color: accent,
-                                level: level,
-                                phase: CGFloat(phase),
-                                size: 22
-                            )
-                        }
-                    } else {
-                        Circle()
-                            .fill(hasProfile ? accent : Color.primary.opacity(0.12))
-                            .frame(width: 22, height: 22)
-                    }
-                }
-                .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.plain)
-            .disabled(!hasProfile)
-            .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
-                colorPicker()
-            }
-
-            Button(action: onDeselect) {
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!hasProfile)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+        ZStack {
+            RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
                 .fill(isHovering && hasProfile ? Color.primary.opacity(0.10) : Color.clear)
-        )
+                .padding(.horizontal, MenuChrome.highlightInset)
+
+            HStack(spacing: 10) {
+                Button {
+                    guard hasProfile else { return }
+                    showColorPicker = true
+                } label: {
+                    Group {
+                        if animatesBlob {
+                            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+                                let level = CGFloat(appState.audioEngine.outputLevel)
+                                let phase = CGFloat(timeline.date.timeIntervalSinceReferenceDate)
+                                    * (2.2 + Double(level) * 4)
+                                AnimatedEQBlobView(
+                                    color: accent,
+                                    level: level,
+                                    phase: CGFloat(phase),
+                                    size: MenuChrome.featuredIconSize
+                                )
+                            }
+                        } else {
+                            Circle()
+                                .fill(hasProfile ? accent : Color.primary.opacity(0.12))
+                                .frame(width: MenuChrome.featuredIconSize, height: MenuChrome.featuredIconSize)
+                        }
+                    }
+                    .frame(width: MenuChrome.featuredIconSize, height: MenuChrome.featuredIconSize)
+                }
+                .buttonStyle(.plain)
+                .disabled(!hasProfile)
+                .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
+                    colorPicker()
+                }
+
+                Button(action: onDeselect) {
+                    Text(title)
+                        .font(MenuChrome.bodyFont)
+                        .fontWeight(.regular)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .font(MenuChrome.bodyFont)
+                .disabled(!hasProfile)
+            }
+            .padding(.horizontal, MenuChrome.contentInset)
+        }
+        .frame(height: MenuChrome.iconRowHeight)
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovering = hovering && hasProfile
@@ -947,25 +1187,29 @@ private struct OtherProfileRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 22, height: 22)
-                Text(title)
-                    .font(.system(size: 13))
-                    .foregroundStyle(isEnabled ? .primary : .secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+            ZStack {
+                RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
                     .fill(isHovering && isEnabled ? Color.primary.opacity(0.10) : Color.clear)
-            )
+                    .padding(.horizontal, MenuChrome.highlightInset)
+
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+                    Text(title)
+                        .font(MenuChrome.bodyFont)
+                        .fontWeight(.regular)
+                        .foregroundStyle(isEnabled ? .primary : .secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, MenuChrome.contentInset)
+            }
+            .frame(height: MenuChrome.iconRowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .font(MenuChrome.bodyFont)
         .disabled(!isEnabled)
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
@@ -974,44 +1218,71 @@ private struct OtherProfileRow: View {
 
 private struct ControlCenterRow: View {
     let title: String
-    var titleWeight: Font.Weight = .regular
-    var titleColor: Color = .primary
+    var style: ControlCenterRowStyle = .command
     var trailing: ControlCenterTrailing = .none
     let action: () -> Void
 
     @State private var isHovering = false
 
+    private var rowHeight: CGFloat {
+        switch style {
+        case .command: return MenuChrome.textRowHeight
+        case .listItem: return MenuChrome.iconRowHeight
+        case .disclosure: return MenuChrome.sectionRowHeight
+        }
+    }
+
+    private var titleFont: Font {
+        switch style {
+        case .command, .listItem:
+            return MenuChrome.bodyFont
+        case .disclosure:
+            return MenuChrome.sectionFont
+        }
+    }
+
+    private var titleColor: Color {
+        switch style {
+        case .command, .listItem: return .primary
+        case .disclosure: return .secondary
+        }
+    }
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 0) {
-                Text(title)
-                    .font(.system(size: 13, weight: titleWeight))
-                    .foregroundStyle(titleColor)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                switch trailing {
-                case .none:
-                    EmptyView()
-                case .chevronRight:
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                case .chevronDown:
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+            ZStack {
+                RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
                     .fill(isHovering ? Color.primary.opacity(0.10) : Color.clear)
-            )
+                    .padding(.horizontal, MenuChrome.highlightInset)
+
+                HStack(spacing: 0) {
+                    Text(title)
+                        .font(titleFont)
+                        .fontWeight(style == .disclosure ? .bold : .regular)
+                        .foregroundStyle(titleColor)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    switch trailing {
+                    case .none:
+                        EmptyView()
+                    case .chevronRight:
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    case .chevronDown:
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal, MenuChrome.contentInset)
+            }
+            .frame(height: rowHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .font(titleFont)
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
     }

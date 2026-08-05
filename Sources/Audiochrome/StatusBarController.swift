@@ -1,15 +1,17 @@
 import AppKit
 import AudiochromeCore
 import Combine
+import QuartzCore
 import SwiftUI
 
-/// AppKit status item — more reliable than SwiftUI MenuBarExtra for SPM-built apps.
+/// AppKit status item with a Control Center–style panel (not NSPopover).
+/// Panel is created lazily on first open so launch/audio startup stays responsive.
 @MainActor
-final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
+final class StatusBarController: NSObject, ObservableObject {
     private var statusItem: NSStatusItem?
-    private var popover: NSPopover?
+    private var panel: StatusMenuPanel?
     private var hostingController: NSHostingController<MenuBarRoot>?
-    private var popoverChrome: PopoverChrome?
+    private var menuChrome: PopoverChrome?
     private let appState: AppState
     private var cancellables = Set<AnyCancellable>()
     private var appearanceObservation: NSKeyValueObservation?
@@ -18,30 +20,34 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
     private var displayedLevel: CGFloat = 0
     private var globalDismissMonitor: Any?
     private var localDismissMonitor: Any?
+    private var statusItemClickMonitor: Any?
+    private var isPresented = false
+    /// Captured during the click while the status-item window is valid.
+    private var pendingAnchorRect: NSRect?
 
     init(appState: AppState) {
         self.appState = appState
         super.init()
-        setup()
+        appState.onWillPresentModal = { [weak self] in
+            self?.closeMenu()
+        }
+        setupStatusItem()
     }
 
-    private func setup() {
+    private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Persist ⌘-dragged menu-bar position across launches (macOS 12+).
+        item.autosaveName = "app.audiochrome.Audiochrome.statusItem"
         statusItem = item
 
         if let button = item.button {
             button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
             button.appearsDisabled = false
-            button.toolTip = "Audiochrome"
-            button.target = self
-            button.action = #selector(statusItemClicked(_:))
-            // mouseDown avoids the classic transient race: mouseDown auto-closes,
-            // then mouseUp’s action re-opens (click appears to do nothing).
-            button.sendAction(on: [.leftMouseDown, .rightMouseDown])
+            // No toolTip — stock menu-bar extras don’t show hover tips over the icon.
+            // No target/action — we swallow mouseDown ourselves so AppKit never
+            // runs its highlight→mouseUp-clear cycle.
 
-            // At create time effectiveAppearance is often still the default (light),
-            // so the halo picks the wrong color until the button joins the menu bar.
             appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
                 Task { @MainActor in
                     self?.refreshIcon()
@@ -49,27 +55,7 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
             }
         }
 
-        let popover = NSPopover()
-        // We dismiss ourselves (monitors + status-item toggle). `.transient` auto-closes
-        // on status-item mouseDown and races the toggle action.
-        popover.behavior = .applicationDefined
-        // Keep AppKit's show/hide animation off — we drive height ourselves so it
-        // can match the SwiftUI disclosure curve (HTML/CSS-style height transition).
-        popover.animates = false
-        popover.delegate = self
-
-        let chrome = PopoverChrome()
-        chrome.attach(popover)
-        self.popoverChrome = chrome
-
-        let root = MenuBarRoot(appState: appState, chrome: chrome)
-        let hosting = NSHostingController(rootView: root)
-        // Don't let intrinsic-size chasing snap to the animation's end value.
-        hosting.sizingOptions = []
-        popover.contentViewController = hosting
-        popover.contentSize = NSSize(width: PopoverMetrics.width, height: 280)
-        self.popover = popover
-        self.hostingController = hosting
+        installStatusItemClickMonitor()
 
         appState.objectWillChange
             .receive(on: RunLoop.main)
@@ -91,7 +77,17 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
             }
         }
 
-        // Defer past status-item attachment so the first paint sees the real menu-bar appearance.
+        // Match Wi‑Fi / Control Center: close when the user changes Spaces.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closeMenu()
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             self?.syncAnimationTimer()
             self?.refreshIcon()
@@ -100,6 +96,134 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
             }
         }
     }
+
+    /// Swallow status-item mouseDown so we fully own the selected highlight.
+    private func installStatusItemClickMonitor() {
+        statusItemClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self, let button = self.statusItem?.button, event.window === button.window else {
+                return event
+            }
+            // ⌘-click is reserved for system menu-bar icon drag/reorder — don’t swallow it.
+            if event.type == .leftMouseDown, event.modifierFlags.contains(.command) {
+                if self.isPresented { self.closeMenu() }
+                self.setStatusItemHighlighted(false)
+                return event
+            }
+            self.handleStatusItemMouseDown(event)
+            return nil
+        }
+    }
+
+    private func handleStatusItemMouseDown(_ event: NSEvent) {
+        let isRightClick =
+            event.type == .rightMouseDown
+            || event.modifierFlags.contains(.control)
+
+        if isRightClick {
+            if isPresented { closeMenu() }
+            appState.toggleActiveEQ()
+            syncAnimationTimer()
+            refreshIcon()
+            setStatusItemHighlighted(false)
+            return
+        }
+
+        pendingAnchorRect = statusItemScreenRect()
+        if isPresented {
+            closeMenu()
+        } else {
+            // Highlight immediately — mouseUp won’t clear it because we swallowed mouseDown.
+            setStatusItemHighlighted(true)
+            DispatchQueue.main.async { [weak self] in
+                self?.openMenu()
+            }
+        }
+    }
+
+    private func ensurePanel() {
+        guard panel == nil else { return }
+
+        let chrome = PopoverChrome()
+        menuChrome = chrome
+
+        let root = MenuBarRoot(appState: appState, chrome: chrome)
+        let hosting = NSHostingController(rootView: root)
+        hosting.sizingOptions = []
+        _ = hosting.view
+        hosting.view.wantsLayer = true
+        hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingController = hosting
+
+        let panel = StatusMenuPanel(
+            contentRect: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 280),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .popUpMenu
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.isMovableByWindowBackground = false
+        // IMPORTANT: invalid combinations abort on modern macOS via _validateCollectionBehavior.
+        // Do not mix .moveToActiveSpace with .canJoinAllSpaces.
+        // Omit .canJoinAllSpaces so the panel doesn’t ride along when changing Spaces —
+        // stock menu-bar menus dismiss instead.
+        panel.collectionBehavior = [.transient, .fullScreenAuxiliary]
+
+        let frame = NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 280)
+        if #available(macOS 26.0, *) {
+            // Stock Wi‑Fi / Sound use Liquid Glass on macOS 26+.
+            let glass = NSGlassEffectView(frame: frame)
+            glass.cornerRadius = MenuMetrics.cornerRadius
+            glass.style = .regular
+            glass.clipsToBounds = true
+            glass.autoresizingMask = [.width, .height]
+            glass.contentView = hosting.view
+            panel.contentView = glass
+        } else {
+            let effect = NSVisualEffectView(frame: frame)
+            effect.material = .popover
+            effect.blendingMode = .behindWindow
+            effect.state = .active
+            effect.clipsToBounds = true
+            effect.maskImage = Self.roundedMaskImage(cornerRadius: MenuMetrics.cornerRadius)
+            effect.autoresizingMask = [.width, .height]
+            hosting.view.frame = effect.bounds
+            hosting.view.autoresizingMask = [.width, .height]
+            effect.addSubview(hosting.view)
+            panel.contentView = effect
+        }
+
+        panel.alphaValue = 0
+        panel.orderOut(nil)
+        self.panel = panel
+        chrome.attach(panel)
+    }
+
+    /// Stretchable rounded-rect mask for NSVisualEffectView (pre–macOS 26 fallback).
+    private static func roundedMaskImage(cornerRadius: CGFloat) -> NSImage {
+        let side = cornerRadius * 2 + 1
+        let size = NSSize(width: side, height: side)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(
+            top: cornerRadius,
+            left: cornerRadius,
+            bottom: cornerRadius,
+            right: cornerRadius
+        )
+        image.resizingMode = .stretch
+        return image
+    }
+
+    // MARK: - Icon
 
     private func syncAnimationTimer() {
         if appState.isEQEngaged {
@@ -126,7 +250,6 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
             return
         }
         let raw = CGFloat(appState.audioEngine.outputLevel)
-        // Display smoothing so the blob eases instead of stuttering with meter hops.
         displayedLevel += (raw - displayedLevel) * 0.35
         if displayedLevel < 0.01 { displayedLevel = 0 }
         animPhase += 0.12 + displayedLevel * 0.55
@@ -144,22 +267,15 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
             level: level,
             phase: animPhase
         )
-        let tip: String
-        if appState.needsAudioPermission {
-            tip = "Audiochrome — needs system audio access\nOpen the menu to fix"
-        } else if appState.isEQEngaged, let name = appState.activeMapping?.profileFilename {
-            tip = "Audiochrome — \((name as NSString).deletingPathExtension)\nRight-click to toggle EQ"
-        } else {
-            tip = "Audiochrome — EQ off\nRight-click to toggle EQ"
+        // Image updates can wipe highlight drawing — re-assert while menu is open.
+        if isPresented {
+            setStatusItemHighlighted(true)
         }
-        button?.toolTip = tip
     }
 
-    /// Status items briefly report a light default appearance before attaching to the menu bar.
     private func menuBarAppearance(for button: NSStatusBarButton?) -> NSAppearance {
         let buttonAppearance = button?.effectiveAppearance
         let appAppearance = NSApp.effectiveAppearance
-
         if let buttonAppearance, StatusIconImage.isDark(buttonAppearance) {
             return buttonAppearance
         }
@@ -169,88 +285,138 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
         return buttonAppearance ?? appAppearance
     }
 
-    @objc private func statusItemClicked(_ sender: Any?) {
-        if NSApp.currentEvent?.type == .rightMouseDown {
-            toggleEQFromStatusItem()
-            return
-        }
-        togglePopover(sender)
-    }
+    // MARK: - Present / dismiss
 
-    private func toggleEQFromStatusItem() {
-        if popover?.isShown == true {
-            popover?.performClose(nil)
-        }
-        appState.toggleActiveEQ()
-        syncAnimationTimer()
-        refreshIcon()
-    }
+    private func openMenu() {
+        guard !isPresented else { return }
+        ensurePanel()
+        guard let panel, let hosting = hostingController else { return }
 
-    @objc private func togglePopover(_ sender: Any?) {
-        guard let button = statusItem?.button, let popover else { return }
-        if popover.isShown {
-            popover.performClose(sender)
-        } else {
-            appState.refreshAll()
-            appState.restoreEngineIfNeeded()
-            // Size to content *before* show — a 1pt-tall first frame looks like a missed click.
-            preparePopoverContentSize()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
+        appState.refreshAll()
+        appState.restoreEngineIfNeeded()
 
-    private func preparePopoverContentSize() {
-        guard let hosting = hostingController else { return }
-        let fitted = hosting.sizeThatFits(in: NSSize(width: PopoverMetrics.width, height: 10_000))
-        let height = max(120, ceil(fitted.height))
-        let size = NSSize(width: PopoverMetrics.width, height: height)
-        popover?.contentSize = size
-        popoverChrome?.noteAppliedHeight(height)
-    }
+        hosting.view.layoutSubtreeIfNeeded()
+        let height = measuredContentHeight()
+        menuChrome?.noteAppliedHeight(height)
 
-    // MARK: - NSPopoverDelegate
+        let size = NSSize(width: MenuMetrics.width, height: height)
+        let frame = anchoredFrame(for: size, preferredAnchor: pendingAnchorRect)
+        pendingAnchorRect = nil
 
-    func popoverDidShow(_ notification: Notification) {
-        popoverChrome?.notePopoverDidShow()
-        // Defer monitors so the opening click can’t immediately dismiss.
+        panel.setFrame(frame, display: true)
+
+        panel.alphaValue = 1
+        NSApp.activate(ignoringOtherApps: true)
+        panel.orderFrontRegardless()
+        panel.makeKeyAndOrderFront(nil)
+        panel.invalidateShadow()
+        isPresented = true
+        setStatusItemHighlighted(true)
+
+        menuChrome?.notePopoverDidShow()
+        startDismissMonitors()
+
         DispatchQueue.main.async { [weak self] in
-            self?.startPopoverDismissMonitor()
-            self?.popoverChrome?.syncToMeasuredHeight()
+            guard let self, self.isPresented else { return }
+            self.menuChrome?.syncToMeasuredHeight()
+            if let panel = self.panel {
+                panel.setFrame(self.anchoredFrame(for: panel.frame.size, preferredAnchor: nil), display: true)
+                panel.invalidateShadow()
+            }
+            self.setStatusItemHighlighted(true)
         }
     }
 
-    func popoverDidClose(_ notification: Notification) {
-        stopPopoverDismissMonitor()
+    private func closeMenu() {
+        guard isPresented else { return }
+        stopDismissMonitors()
+        panel?.orderOut(nil)
+        panel?.alphaValue = 0
+        isPresented = false
+        setStatusItemHighlighted(false)
     }
 
-    private func startPopoverDismissMonitor() {
-        stopPopoverDismissMonitor()
+    private func measuredContentHeight() -> CGFloat {
+        guard let hosting = hostingController else { return 280 }
+        let fitted = hosting.sizeThatFits(in: NSSize(width: MenuMetrics.width, height: 10_000))
+        let fitting = hosting.view.fittingSize.height
+        return max(120, ceil(max(fitted.height, fitting)))
+    }
 
-        // Clicks in other apps / desktop / other menu-bar items.
+    private func anchoredFrame(for size: NSSize, preferredAnchor: NSRect?) -> NSRect {
+        let margin = MenuMetrics.screenMargin
+        let gap = MenuMetrics.menuBarGap
+        let anchor = preferredAnchor ?? statusItemScreenRect()
+
+        guard let anchor else {
+            let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            return NSRect(
+                x: visible.maxX - size.width - margin,
+                y: visible.maxY - size.height - gap,
+                width: size.width,
+                height: size.height
+            )
+        }
+
+        let screen = NSScreen.screens.first(where: { $0.frame.intersects(anchor) })
+            ?? statusItem?.button?.window?.screen
+            ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? anchor
+
+        var x = anchor.minX
+        if x + size.width > visible.maxX - margin {
+            x = anchor.maxX - size.width
+        }
+        x = min(max(x, visible.minX + margin), max(visible.minX + margin, visible.maxX - size.width - margin))
+        // Leave a small gap under the menu bar, matching Wi‑Fi / Control Center.
+        let y = anchor.minY - size.height - gap
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private func statusItemScreenRect() -> NSRect? {
+        guard let button = statusItem?.button, let window = button.window else { return nil }
+        let rectInWindow = button.convert(button.bounds, to: nil)
+        let screenRect = window.convertToScreen(rectInWindow)
+        if screenRect.width > 0, screenRect.height > 0 {
+            return screenRect
+        }
+        return window.frame
+    }
+
+    private func setStatusItemHighlighted(_ highlighted: Bool) {
+        statusItem?.button?.highlight(highlighted)
+    }
+
+    // MARK: - Dismiss monitors
+
+    private func startDismissMonitors() {
+        stopDismissMonitors()
+
         globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            guard let self else { return }
-            // Status-item clicks can surface here depending on activation; never steal the toggle.
+            guard let self, self.isPresented else { return }
             if self.isMouseInStatusItem() { return }
-            self.closePopoverFromOutsideClick()
+            self.closeMenu()
         }
 
-        // Clicks elsewhere in this app (but not inside the popover).
-        localDismissMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-            guard let self, let popover = self.popover, popover.isShown else { return event }
-            if self.isEvent(event, inside: popover) {
+        localDismissMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self, self.isPresented else { return event }
+            if event.type == .keyDown {
+                // Esc — same as stock menu-bar menus.
+                if event.keyCode == 53 {
+                    self.closeMenu()
+                    return nil
+                }
                 return event
             }
-            // Keep status-item clicks so togglePopover can handle them.
-            if self.isMouseInStatusItem() {
-                return event
-            }
-            self.closePopoverFromOutsideClick()
+            if self.isEventInsideMenu(event) { return event }
+            // Status-item clicks are handled (and swallowed) by statusItemClickMonitor.
+            if event.window === self.statusItem?.button?.window { return event }
+            self.closeMenu()
             return event
         }
     }
 
-    private func stopPopoverDismissMonitor() {
+    private func stopDismissMonitors() {
         if let globalDismissMonitor {
             NSEvent.removeMonitor(globalDismissMonitor)
             self.globalDismissMonitor = nil
@@ -261,35 +427,35 @@ final class StatusBarController: NSObject, ObservableObject, NSPopoverDelegate {
         }
     }
 
-    private func closePopoverFromOutsideClick() {
-        guard popover?.isShown == true else { return }
-        popover?.performClose(nil)
+    private func isEventInsideMenu(_ event: NSEvent) -> Bool {
+        guard let panel, isPresented else { return false }
+        if event.window === panel { return true }
+        return panel.frame.contains(NSEvent.mouseLocation)
     }
 
-    private func isEvent(_ event: NSEvent, inside popover: NSPopover) -> Bool {
-        guard let contentView = popover.contentViewController?.view,
-              let window = contentView.window
-        else { return false }
-
-        if event.window === window {
-            let point = event.locationInWindow
-            return contentView.bounds.contains(contentView.convert(point, from: nil))
-        }
-
-        // Screen-space fallback for some event deliveries.
-        return window.frame.contains(NSEvent.mouseLocation)
-    }
-
-    /// Screen-space hit test — status-item events often don’t share `event.window` with the button.
     private func isMouseInStatusItem() -> Bool {
         guard let button = statusItem?.button, let window = button.window else { return false }
+        let mouse = NSEvent.mouseLocation
+        if window.frame.contains(mouse) { return true }
         let rectInWindow = button.convert(button.bounds, to: nil)
         let screenRect = window.convertToScreen(rectInWindow)
-        return screenRect.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
+        return screenRect.insetBy(dx: -4, dy: -4).contains(mouse)
     }
 
     private func nsColor(from color: Color) -> NSColor {
         NSColor(color)
+    }
+}
+
+final class StatusMenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    /// Kill the WindowServer hairline that contours `hasShadow` on transparent panels.
+    /// Stock Control Center menus suppress this rim; without it we get a gray outline.
+    @objc(_shadowRimInfo)
+    func shadowRimInfo() -> [String: NSNumber] {
+        ["kCUIMeasureWindowFrameRimDensity": 0]
     }
 }
 
@@ -311,12 +477,11 @@ enum StatusIconImage {
         let center = CGPoint(x: drawRect.midX, y: drawRect.midY)
         let radius = min(drawRect.width, drawRect.height) / 2 * 0.92
 
-        let darkBar = isDarkMenuBar(appearance)
+        let darkBar = isDark(appearance ?? NSApp.effectiveAppearance)
         let paint: NSColor = isEngaged
             ? contrastAdjusted(color, againstDarkBackground: darkBar)
             : .black
 
-        // Silence → circle; audio → organic blob (logo silhouette).
         let blob = EQBlob.bezierPath(center: center, radius: radius, level: level, phase: phase)
 
         if isEngaged {
@@ -336,16 +501,10 @@ enum StatusIconImage {
         return image
     }
 
-    /// Status items briefly report a light default appearance before attaching to the menu bar.
-    private static func isDarkMenuBar(_ appearance: NSAppearance?) -> Bool {
-        isDark(appearance ?? NSApp.effectiveAppearance)
-    }
-
     static func isDark(_ appearance: NSAppearance) -> Bool {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
-    /// Lift dark colors on dark bars / deepen pale colors on light bars, keep hue.
     private static func contrastAdjusted(_ color: NSColor, againstDarkBackground: Bool) -> NSColor {
         let rgb = color.usingColorSpace(.deviceRGB) ?? color
         var h: CGFloat = 0
@@ -366,99 +525,112 @@ enum StatusIconImage {
     }
 }
 
-// MARK: - Popover sizing
-
-private enum PopoverMetrics {
+private enum MenuMetrics {
     static let width: CGFloat = 320
+    /// Control Center / Wi‑Fi panels use 16; default windows use 10.
+    static let cornerRadius: CGFloat = 16
+    static let minMeasuredHeight: CGFloat = 80
+    static let screenMargin: CGFloat = 8
+    /// Gap between menu-bar bottom and panel top (matches system extras).
+    static let menuBarGap: CGFloat = 5
 }
 
-/// Bridges SwiftUI layout ↔ NSPopover height.
-/// Disclosure expand/collapse animates `contentSize` with the same duration/curve as
-/// the SwiftUI height clip — like a CSS height transition, not display:none.
 @MainActor
 final class PopoverChrome: ObservableObject {
     static let disclosureDuration: TimeInterval = 0.28
 
-    /// Increments each time the menu popover opens — SwiftUI `onDisappear` is unreliable
-    /// with NSPopover because the hosting view stays mounted.
     @Published private(set) var presentationID: Int = 0
 
-    private weak var popover: NSPopover?
+    private weak var panel: StatusMenuPanel?
+    private var panelIsShowing: () -> Bool = { false }
     private(set) var isDisclosureAnimating = false
     private var measuredHeight: CGFloat = 0
-    private var disclosureTimer: Timer?
 
-    func attach(_ popover: NSPopover) {
-        self.popover = popover
+    func attach(_ panel: StatusMenuPanel) {
+        self.panel = panel
+        self.panelIsShowing = { [weak panel] in
+            (panel?.alphaValue ?? 0) > 0.5 && (panel?.isVisible == true)
+        }
     }
 
     func notePopoverDidShow() {
         presentationID += 1
     }
 
-    /// Live laid-out height from GeometryReader. Ignored while disclosure is animating
-    /// so we don't snap to SwiftUI's end-state intrinsic size mid-transition.
     func reportMeasuredHeight(_ height: CGFloat) {
-        measuredHeight = max(1, ceil(height))
+        let h = ceil(height)
+        guard h >= MenuMetrics.minMeasuredHeight else { return }
+        measuredHeight = h
         guard !isDisclosureAnimating else { return }
-        applyHeight(measuredHeight)
+        guard panelIsShowing() else { return }
+        applyHeight(h, animated: false)
     }
 
     func syncToMeasuredHeight() {
-        guard measuredHeight > 1 else { return }
-        applyHeight(measuredHeight)
+        guard measuredHeight >= MenuMetrics.minMeasuredHeight else { return }
+        applyHeight(measuredHeight, animated: false)
     }
 
-    /// Seed chrome’s idea of height after an external `contentSize` set (e.g. before show).
     func noteAppliedHeight(_ height: CGFloat) {
-        measuredHeight = max(1, ceil(height))
+        measuredHeight = max(MenuMetrics.minMeasuredHeight, ceil(height))
     }
 
-    /// Animate popover height by the disclosure delta in lockstep with SwiftUI.
+    /// Animates the panel frame via AppKit’s animator (compositor-driven).
+    /// Pair with `withAnimation(.easeInOut(duration: disclosureDuration))` on content progress
+    /// so list height and window height share the same curve without a CPU tick loop.
     func animateDisclosure(deltaHeight: CGFloat) {
-        guard let popover, abs(deltaHeight) > 0.5 else { return }
+        guard let panel, abs(deltaHeight) > 0.5 else { return }
 
-        disclosureTimer?.invalidate()
         isDisclosureAnimating = true
 
-        let from = popover.contentSize.height
-        let to = max(1, from + deltaHeight)
-        let duration = Self.disclosureDuration
-        let start = ProcessInfo.processInfo.systemUptime
+        var frame = panel.frame
+        let newHeight = max(1, frame.height + deltaHeight)
+        frame.origin.y += frame.height - newHeight
+        frame.size.height = newHeight
+        frame.size.width = MenuMetrics.width
 
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
-            Task { @MainActor in
-                guard let self else {
-                    timer.invalidate()
-                    return
-                }
-                let elapsed = ProcessInfo.processInfo.systemUptime - start
-                let linear = min(1, elapsed / duration)
-                // Match SwiftUI `.easeInOut` (smoothstep).
-                let eased = linear * linear * (3 - 2 * linear)
-                let height = from + (to - from) * CGFloat(eased)
-                self.applyHeight(height)
-
-                if linear >= 1 {
-                    timer.invalidate()
-                    self.disclosureTimer = nil
-                    self.isDisclosureAnimating = false
-                    // Correct any estimate drift against the real laid-out height.
-                    DispatchQueue.main.async {
-                        self.syncToMeasuredHeight()
-                    }
-                }
-            }
+        let hadShadow = panel.hasShadow
+        if hadShadow {
+            panel.hasShadow = false
         }
-        RunLoop.main.add(timer, forMode: .common)
-        disclosureTimer = timer
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.disclosureDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            panel.animator().setFrame(frame, display: true)
+        }, completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if hadShadow {
+                    self.panel?.hasShadow = true
+                    self.panel?.invalidateShadow()
+                }
+                self.isDisclosureAnimating = false
+                self.syncToMeasuredHeight()
+            }
+        })
     }
 
-    private func applyHeight(_ height: CGFloat) {
-        guard let popover else { return }
-        let size = NSSize(width: PopoverMetrics.width, height: max(1, height))
-        guard abs(popover.contentSize.height - size.height) > 0.25 else { return }
-        popover.contentSize = size
+    private func applyHeight(_ height: CGFloat, animated: Bool) {
+        guard let panel else { return }
+        let newHeight = max(1, height)
+        var frame = panel.frame
+        guard abs(frame.height - newHeight) > 0.25 || abs(frame.width - MenuMetrics.width) > 0.25 else {
+            return
+        }
+        frame.origin.y += frame.height - newHeight
+        frame.size.height = newHeight
+        frame.size.width = MenuMetrics.width
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.disclosureDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: true)
+        }
     }
 }
 
@@ -477,8 +649,9 @@ private struct MenuBarRoot: View {
         MenuBarView()
             .environmentObject(appState)
             .environmentObject(chrome)
-            .frame(width: PopoverMetrics.width, alignment: .top)
+            .frame(width: MenuMetrics.width, alignment: .top)
             .fixedSize(horizontal: false, vertical: true)
+            // Glass / vibrancy lives on the AppKit content root.
             .background(
                 GeometryReader { proxy in
                     Color.clear.preference(key: ViewHeightKey.self, value: proxy.size.height)

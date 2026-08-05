@@ -71,7 +71,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.6.0</string>
+	<string>0.7.0</string>
 	<key>CFBundleVersion</key>
 	<string>6</string>
 	<key>LSMinimumSystemVersion</key>
@@ -86,14 +86,29 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc sign with a stable identifier. Unsigned / mis-signed SPM apps get silent
-# UNUserNotificationCenter failures instead of a permission dialog.
+# Ad-hoc sign with a *stable* identifier matching CFBundleIdentifier.
+# If the code-signing ID drifts (Audiochrome-<hash>), UNUserNotificationCenter
+# silently fails and notification permission resets every rebuild.
+# Google Drive (and some sync tools) stamp xattrs/resource forks that make
+# codesign refuse to bind Info.plist — strip them before signing.
 if command -v codesign >/dev/null; then
-  if [[ -d "$RESOURCE_BUNDLE_DST" ]]; then
-    codesign --force --sign - --identifier "app.audiochrome.Audiochrome.resources" "$RESOURCE_BUNDLE_DST" || true
+  if command -v xattr >/dev/null; then
+    xattr -cr "$APP_DIR" 2>/dev/null || true
   fi
-  codesign --force --sign - --identifier "app.audiochrome.Audiochrome" "$APP_DIR/Contents/MacOS/Audiochrome" || true
-  codesign --force --sign - --identifier "app.audiochrome.Audiochrome" "$APP_DIR" || true
+  if [[ -d "${RESOURCE_BUNDLE_DST:-}" ]]; then
+    codesign --force --sign - \
+      --identifier "app.audiochrome.Audiochrome.resources" \
+      "$RESOURCE_BUNDLE_DST"
+  fi
+  # Sign innermost → outermost so the app bundle binds Info.plist.
+  codesign --force --sign - \
+    --identifier "app.audiochrome.Audiochrome" \
+    "$APP_DIR/Contents/MacOS/Audiochrome"
+  codesign --force --sign - \
+    --identifier "app.audiochrome.Audiochrome" \
+    "$APP_DIR"
+  echo "codesign:"
+  codesign -dv --verbose=2 "$APP_DIR" 2>&1 | grep -E 'Identifier=|Info.plist' || true
 fi
 if [[ -x /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister ]]; then
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP_DIR" 2>/dev/null || true

@@ -12,7 +12,7 @@ public final class EQStatusNotifier: NSObject {
     public static let shared = EQStatusNotifier()
 
     private static let notificationID = "app.audiochrome.eq-status"
-    /// Banner on-screen time; then we remove it from Notification Center.
+    /// Banner on-screen time; then remove from Notification Center.
     private static let clearAfter: TimeInterval = 5.5
 
     private let center = UNUserNotificationCenter.current()
@@ -31,13 +31,29 @@ public final class EQStatusNotifier: NSObject {
         log.info("Configured UNUserNotificationCenter (bundle \(Bundle.main.bundleIdentifier ?? "nil", privacy: .public))")
     }
 
+    /// Removes any delivered / pending EQ status notification.
+    public func clearActiveEQ() {
+        configure()
+        clearWorkItem?.cancel()
+        clearWorkItem = nil
+        center.removeDeliveredNotifications(withIdentifiers: [Self.notificationID])
+        center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
+        log.info("Cleared EQ status notification")
+    }
+
     /// Requests alert permission if still undetermined, then posts the EQ status banner.
-    public func notifyActiveEQ(outputName: String, profileDisplayName: String, colorHex: String) {
+    public func notifyActiveEQ(
+        outputName: String,
+        profileDisplayName: String,
+        folderName: String,
+        colorHex: String
+    ) {
         configure()
 
         let payload = Payload(
             outputName: outputName,
             profileDisplayName: profileDisplayName,
+            folderName: folderName,
             colorHex: colorHex
         )
         center.getNotificationSettings { [weak self] settings in
@@ -73,9 +89,28 @@ public final class EQStatusNotifier: NSObject {
         }
     }
 
+    /// Call after launch auth has had a moment — avoids racing the first banner.
+    public func notifyActiveEQAfterLaunch(
+        outputName: String,
+        profileDisplayName: String,
+        folderName: String,
+        colorHex: String
+    ) {
+        configure()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.notifyActiveEQ(
+                outputName: outputName,
+                profileDisplayName: profileDisplayName,
+                folderName: folderName,
+                colorHex: colorHex
+            )
+        }
+    }
+
     private struct Payload {
         let outputName: String
         let profileDisplayName: String
+        let folderName: String
         let colorHex: String
     }
 
@@ -95,15 +130,16 @@ public final class EQStatusNotifier: NSObject {
 
     private func post(_ payload: Payload) {
         let content = UNMutableNotificationContent()
-        // Row 1 = profile, row 2 = output.
+        // Row 1 = profile, row 2 = folder, row 3 = output.
         content.title = payload.profileDisplayName
+        content.subtitle = payload.folderName
         content.body = payload.outputName
 
         if let attachment = makeColorCircleAttachment(hex: payload.colorHex) {
             content.attachments = [attachment]
         }
 
-        // Replace any in-flight EQ banner instead of stacking.
+        // One EQ status notification at a time — drop the previous before posting.
         center.removeDeliveredNotifications(withIdentifiers: [Self.notificationID])
         center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
 
@@ -127,8 +163,7 @@ public final class EQStatusNotifier: NSObject {
     private func scheduleClear() {
         clearWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.center.removeDeliveredNotifications(withIdentifiers: [Self.notificationID])
-            self?.center.removePendingNotificationRequests(withIdentifiers: [Self.notificationID])
+            self?.clearActiveEQ()
         }
         clearWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearAfter, execute: work)
@@ -182,6 +217,6 @@ extension EQStatusNotifier: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner])
+        completionHandler([.banner, .sound])
     }
 }
