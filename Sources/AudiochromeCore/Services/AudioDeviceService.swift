@@ -128,8 +128,7 @@ public final class AudioDeviceService: @unchecked Sendable {
             name(for: deviceID),
             stringProperty(deviceID, selector: kAudioObjectPropertyName, scope: kAudioObjectPropertyScopeGlobal),
             stringProperty(deviceID, selector: kAudioObjectPropertyElementName, scope: kAudioDevicePropertyScopeOutput),
-            stringProperty(deviceID, selector: kAudioObjectPropertyElementCategoryName, scope: kAudioDevicePropertyScopeOutput),
-            dataSourceName(for: deviceID)
+            stringProperty(deviceID, selector: kAudioObjectPropertyElementCategoryName, scope: kAudioDevicePropertyScopeOutput)
         ]
 
         let cleaned = candidates
@@ -139,6 +138,14 @@ public final class AudioDeviceService: @unchecked Sendable {
         // Prefer anything more specific than the generic AirPlay label.
         if let better = cleaned.first(where: { $0.caseInsensitiveCompare("AirPlay") != .orderedSame }) {
             return better
+        }
+
+        // Only probe data-source names when the device label is missing/generic —
+        // some HAL proxies crash on that property even after HasProperty.
+        if let dataSource = dataSourceName(for: deviceID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !dataSource.isEmpty {
+            return dataSource
         }
         return cleaned.first ?? ""
     }
@@ -150,10 +157,24 @@ public final class AudioDeviceService: @unchecked Sendable {
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
+
         var qualifier = sourceID
-        var size = UInt32(MemoryLayout<CFString?>.stride)
-        var value: CFString?
-        let status = withUnsafeMutablePointer(to: &value) { ptr in
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(
+            deviceID,
+            &address,
+            UInt32(MemoryLayout<UInt32>.size),
+            &qualifier,
+            &size
+        ) == noErr, size > 0 else {
+            return nil
+        }
+
+        // CFStringRef out-parameter (not Optional CFString?) — the Optional layout
+        // can pass a null buffer into HAL under release optimization.
+        var unmanaged: Unmanaged<CFString>?
+        let status = withUnsafeMutablePointer(to: &unmanaged) { ptr in
             AudioObjectGetPropertyData(
                 deviceID,
                 &address,
@@ -163,8 +184,8 @@ public final class AudioDeviceService: @unchecked Sendable {
                 ptr
             )
         }
-        guard status == noErr else { return nil }
-        return value as String?
+        guard status == noErr, let unmanaged else { return nil }
+        return unmanaged.takeUnretainedValue() as String
     }
 
     private func dataSourceID(for deviceID: AudioDeviceID) -> UInt32? {
@@ -173,6 +194,7 @@ public final class AudioDeviceService: @unchecked Sendable {
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
         var size = UInt32(MemoryLayout<UInt32>.size)
         var value: UInt32 = 0
         guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr else {
@@ -312,12 +334,13 @@ public final class AudioDeviceService: @unchecked Sendable {
             mScope: scope,
             mElement: kAudioObjectPropertyElementMain
         )
-        var size = UInt32(MemoryLayout<CFString?>.stride)
-        var value: CFString?
-        let status = withUnsafeMutablePointer(to: &value) { ptr in
+        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        var unmanaged: Unmanaged<CFString>?
+        let status = withUnsafeMutablePointer(to: &unmanaged) { ptr in
             AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, ptr)
         }
-        guard status == noErr, let value else { return nil }
-        return value as String
+        guard status == noErr, let unmanaged else { return nil }
+        return unmanaged.takeUnretainedValue() as String
     }
 }
