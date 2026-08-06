@@ -7,7 +7,6 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var popoverChrome: PopoverChrome
-    @FocusState private var focusedRenameID: Bool
 
     /// 1 = system-default output’s EQ panel visible; 0 = collapsed (an inactive output is focused).
     @State private var activePanelProgress: CGFloat = 1
@@ -28,6 +27,10 @@ struct MenuBarView: View {
     @State private var colorPickerIdentityKey: String?
     @State private var renamingIdentityKey: String?
     @State private var renameText = ""
+    /// Bumped each rename so the AppKit field remounts and reclaims first responder.
+    @State private var renameSessionID = 0
+    /// Outside-click commit is delayed so context-menu mouseUp doesn’t cancel rename.
+    @State private var renameOutsideClicksEnabled = false
 
     private var activeDevice: AudioOutputDevice? {
         if !appState.config.customEQPerDevice {
@@ -65,7 +68,10 @@ struct MenuBarView: View {
         guard let filename = activeMapping.profileFilename else {
             return Color(nsColor: .systemGray)
         }
-        return appState.colorHex(forProfile: filename).asHexColor
+        return appState.colorHex(
+            forProfile: filename,
+            forIdentity: activeDevice?.identityKey
+        ).asHexColor
     }
 
     private var isActivePanelVisible: Bool {
@@ -103,7 +109,7 @@ struct MenuBarView: View {
                     otherDevicesDisclosure
                 }
 
-                Divider().padding(.horizontal, MenuChrome.dividerInset)
+                logoBreak
 
                 VStack(alignment: .leading, spacing: 0) {
                     ControlCenterRow(title: "Settings…", style: .command) {
@@ -116,7 +122,6 @@ struct MenuBarView: View {
                         }
                     }
                 }
-                .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
             }
             .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
             .disabled(appState.needsAudioPermission)
@@ -134,6 +139,11 @@ struct MenuBarView: View {
         .padding(.bottom, MenuChrome.menuPadding)
         .frame(maxWidth: .infinity, alignment: .top)
         .focusEffectDisabled()
+        .background {
+            RenameOutsideClickMonitor(enabled: renameOutsideClicksEnabled) {
+                commitRename()
+            }
+        }
         .onAppear {
             appState.refreshAll()
             syncRenameText()
@@ -144,6 +154,7 @@ struct MenuBarView: View {
         }
         .onChange(of: popoverChrome.presentationID) { _, _ in
             // NSPopover keeps the hosting view mounted — reset pins on each open.
+            endRenameIfNeeded()
             beginPopoverSession()
         }
         .onChange(of: activeDevice?.identityKey) { _, _ in
@@ -167,6 +178,24 @@ struct MenuBarView: View {
         pinOtherDevicesWithProfiles(reset: true)
         otherDevicesListProgress = 0
         focusActiveOutput(animated: false)
+    }
+
+    /// Brand band between device list and Settings — replaces a plain divider.
+    private var logoBreak: some View {
+        VStack(spacing: 0) {
+            // Skip when “Other Devices” is already the row above — no double rule under it.
+            if unlistedDevices.isEmpty {
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
+            }
+            AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight)
+                .padding(.horizontal, MenuChrome.contentInset)
+                .padding(.top, MenuChrome.logoBreakTopPadding)
+                .padding(.bottom, MenuChrome.logoBreakBottomPadding)
+            Divider()
+                .padding(.horizontal, MenuChrome.dividerInset)
+                // Match Settings row highlight’s trailing inset.
+                .padding(.bottom, MenuChrome.highlightInset)
+        }
     }
 
     // MARK: - Output headers (active + inactive share the same chrome)
@@ -207,7 +236,7 @@ struct MenuBarView: View {
         onToggleExpand: @escaping () -> Void
     ) -> some View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
-        let isRenaming = renamingIdentityKey == device.identityKey && isFocused
+        let isRenaming = renamingIdentityKey == device.identityKey
 
         return HStack(spacing: 10) {
             // One hit target: name + trailing space up to the toggle.
@@ -274,33 +303,25 @@ struct MenuBarView: View {
         let key = device.identityKey
         let isRenaming = renamingIdentityKey == key
 
-        if isRenaming, isFocused {
-            TextField("Name", text: $renameText)
-                .textFieldStyle(.plain)
-                .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
-                .focused($focusedRenameID)
-                .onSubmit { commitRename() }
-                .onChange(of: focusedRenameID) { _, focused in
-                    if focused {
-                        DispatchQueue.main.async {
-                            NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
-                        }
-                    } else {
-                        commitRename()
-                    }
-                }
-                .onAppear {
-                    focusedRenameID = true
-                    DispatchQueue.main.async {
-                        NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
-                    }
-                }
-                .padding(.vertical, 2)
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(1)
+        if isRenaming {
+            DeviceRenameField(
+                text: $renameText,
+                font: NSFont.systemFont(
+                    ofSize: MenuChrome.headerFontSize,
+                    weight: isFocused ? .bold : .regular
+                ),
+                onCommit: { commitRename() }
+            )
+            .id(renameSessionID)
+            .frame(height: MenuChrome.textRowContentHeight)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
         } else {
             Text(isFocused ? "\(device.name) EQ" : device.name)
-                .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
+                .font(.system(
+                    size: MenuChrome.headerFontSize,
+                    weight: isFocused ? MenuChrome.headerWeight : MenuChrome.bodyWeight
+                ))
                 .foregroundStyle(isFocused ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -453,7 +474,9 @@ struct MenuBarView: View {
                 otherDevicePanelProgress = 1
                 inactiveOtherProfilesProgress = preferredOtherProfiles
                 colorPickerIdentityKey = nil
-                endRenameIfNeeded()
+                if renamingIdentityKey != key {
+                    endRenameIfNeeded()
+                }
             }
         } else {
             activePanelProgress = 0
@@ -462,7 +485,9 @@ struct MenuBarView: View {
             otherDevicePanelProgress = 1
             inactiveOtherProfilesProgress = preferredOtherProfiles
             colorPickerIdentityKey = nil
-            endRenameIfNeeded()
+            if renamingIdentityKey != key {
+                endRenameIfNeeded()
+            }
         }
     }
 
@@ -477,7 +502,9 @@ struct MenuBarView: View {
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
                 colorPickerIdentityKey = nil
-                endRenameIfNeeded()
+                if let renamingIdentityKey, renamingIdentityKey != activeKey {
+                    endRenameIfNeeded()
+                }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
                 if otherDevicePanelProgress < 0.01 {
@@ -491,7 +518,9 @@ struct MenuBarView: View {
             otherDevicePanelProgress = 0
             inactiveOtherProfilesProgress = 0
             colorPickerIdentityKey = nil
-            endRenameIfNeeded()
+            if let renamingIdentityKey, renamingIdentityKey != activeKey {
+                endRenameIfNeeded()
+            }
         }
     }
 
@@ -516,9 +545,9 @@ struct MenuBarView: View {
     }
 
     private func syncRenameText() {
+        renameOutsideClicksEnabled = false
         renamingIdentityKey = nil
         renameText = ""
-        focusedRenameID = false
     }
 
     /// Expand the row if needed, then enter rename with the name selected.
@@ -531,13 +560,23 @@ struct MenuBarView: View {
         } else if expandedOtherDeviceKey != device.identityKey || otherDevicePanelProgress < 0.5 {
             focusOtherDevice(device, animated: false)
         }
-        beginRename(device)
+        // Context menu steals key window on accessory apps; wait for it to finish
+        // dismissing before mounting the AppKit field (which re-keys + selects all).
+        DispatchQueue.main.async {
+            beginRename(device)
+        }
     }
 
     private func beginRename(_ device: AudioOutputDevice) {
+        renameOutsideClicksEnabled = false
+        renameSessionID &+= 1
         renamingIdentityKey = device.identityKey
         renameText = device.name
-        focusedRenameID = true
+        // Ignore the context-menu click that just dismissed, then arm outside-commit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard renamingIdentityKey == device.identityKey else { return }
+            renameOutsideClicksEnabled = true
+        }
     }
 
     private func endRenameIfNeeded() {
@@ -548,16 +587,212 @@ struct MenuBarView: View {
     private func commitRename() {
         let key = renamingIdentityKey
         defer {
+            renameOutsideClicksEnabled = false
             renamingIdentityKey = nil
-            focusedRenameID = false
             renameText = ""
         }
         guard let key else { return }
         let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let current = appState.devices.first(where: { $0.identityKey == key })?.name
+            ?? (key == AppConfig.allAudioIdentityKey ? appState.allAudioDisplayName : nil)
         if trimmed != current {
             appState.setDisplayName(forIdentity: key, name: trimmed)
+        }
+    }
+}
+
+/// AppKit field — SwiftUI `TextField` + `FocusState` often fails to select-all after a
+/// context menu on the first open (panel isn’t key again until some other interaction).
+private struct DeviceRenameField: NSViewRepresentable {
+    @Binding var text: String
+    var font: NSFont
+    var onCommit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onCommit: onCommit)
+    }
+
+    func makeNSView(context: Context) -> RenameNSTextField {
+        let field = RenameNSTextField()
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = font
+        field.textColor = .labelColor
+        field.stringValue = text
+        field.delegate = context.coordinator
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.isEditable = true
+        field.isSelectable = true
+        context.coordinator.field = field
+        field.onMovedToWindow = { [weak coordinator = context.coordinator] in
+            coordinator?.scheduleFocusAndSelectAll()
+        }
+        context.coordinator.scheduleFocusAndSelectAll()
+        return field
+    }
+
+    func updateNSView(_ field: RenameNSTextField, context: Context) {
+        context.coordinator.onCommit = onCommit
+        context.coordinator.text = $text
+        field.font = font
+        if field.currentEditor() == nil, field.stringValue != text {
+            field.stringValue = text
+            field.invalidateIntrinsicContentSize()
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var onCommit: () -> Void
+        weak var field: RenameNSTextField?
+        private var didClaimFocus = false
+        private var isCommitting = false
+        /// Ignores end-editing from key-window churn while we claim first responder.
+        private var acceptsEndEditing = false
+
+        init(text: Binding<String>, onCommit: @escaping () -> Void) {
+            self.text = text
+            self.onCommit = onCommit
+        }
+
+        /// One focus claim when the field lands in a window; select on the next run loop.
+        func scheduleFocusAndSelectAll() {
+            guard !didClaimFocus else { return }
+            guard let field, let window = field.window else { return }
+            didClaimFocus = true
+
+            NSApp.activate(ignoringOtherApps: true)
+            if !window.isKeyWindow {
+                window.makeKeyAndOrderFront(nil)
+            }
+            _ = window.makeFirstResponder(field)
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let field = self.field, let editor = field.currentEditor() else { return }
+                let length = (editor.string as NSString).length
+                editor.selectedRange = NSRange(location: 0, length: length)
+                self.acceptsEndEditing = true
+            }
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+            field.invalidateIntrinsicContentSize()
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard acceptsEndEditing else { return }
+            commitOnce()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:))
+                || commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                acceptsEndEditing = true
+                commitOnce()
+                return true
+            }
+            return false
+        }
+
+        private func commitOnce() {
+            guard !isCommitting else { return }
+            isCommitting = true
+            onCommit()
+        }
+    }
+}
+
+private final class RenameNSTextField: NSTextField {
+    var onMovedToWindow: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            onMovedToWindow?()
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let fitted = sizeThatFits(NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24))
+        return NSSize(width: max(24, ceil(fitted.width) + 4), height: MenuChrome.textRowContentHeight)
+    }
+}
+
+/// Commits an in-progress rename when the user clicks elsewhere in the menu panel.
+private struct RenameOutsideClickMonitor: NSViewRepresentable {
+    var enabled: Bool
+    var onOutside: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOutside: onOutside)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onOutside = onOutside
+        context.coordinator.setEnabled(enabled)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    final class Coordinator {
+        var onOutside: () -> Void
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        init(onOutside: @escaping () -> Void) {
+            self.onOutside = onOutside
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+        }
+
+        func setEnabled(_ enabled: Bool) {
+            if enabled {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                    guard let self else { return event }
+                    guard let panel = self.view?.window, event.window === panel else { return event }
+                    if self.isClickInRenameField(event) { return event }
+                    DispatchQueue.main.async { self.onOutside() }
+                    return event
+                }
+            } else {
+                teardown()
+            }
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func isClickInRenameField(_ event: NSEvent) -> Bool {
+            guard let content = event.window?.contentView else { return false }
+            guard let hit = content.hitTest(event.locationInWindow) else { return false }
+            var current: NSView? = hit
+            while let view = current {
+                if view is NSTextField || view is NSTextView { return true }
+                current = view.superview
+            }
+            return false
         }
     }
 }
@@ -573,10 +808,11 @@ private enum MenuChrome {
     static let sectionToContentSpacing: CGFloat = 6
     static let waveformSpacing: CGFloat = 6
     static let waveformBottomPadding: CGFloat = 2
-    /// Scrim inset from the panel edge — tighter than `contentInset` so the EQ strip
-    /// breaks out past the text/control column.
-    static let waveformHorizontalInset: CGFloat = 6
     static let otherProfilesSectionVerticalPadding: CGFloat = 6
+    /// Wordmark height in the break above Settings (asset is ~5.4∶1).
+    static let logoHeight: CGFloat = 20
+    static let logoBreakBottomPadding: CGFloat = 9
+    static let logoBreakTopPadding: CGFloat = 28
     /// Dimmed chrome below the audio-permission CTA.
     static let permissionLockedOpacity: Double = 0.4
 
@@ -725,6 +961,7 @@ private struct OutputEQPanel: View {
     @Binding var otherProfilesProgress: CGFloat
     @Binding var colorPickerIdentityKey: String?
     var showsLeadingDivider: Bool = true
+    @State private var isProfileDropTargeted = false
 
     private var mapping: OutputMapping {
         appState.config.mapping(forIdentity: identityKey)
@@ -754,7 +991,7 @@ private struct OutputEQPanel: View {
         guard let filename = mapping.profileFilename else {
             return Color(nsColor: .systemGray)
         }
-        return appState.colorHex(forProfile: filename).asHexColor
+        return appState.colorHex(forProfile: filename, forIdentity: identityKey).asHexColor
     }
 
     private var showColorPicker: Binding<Bool> {
@@ -776,6 +1013,29 @@ private struct OutputEQPanel: View {
                 .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(accent.opacity(isProfileDropTargeted ? 0.12 : 0))
+                .padding(.horizontal, 6)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(accent.opacity(isProfileDropTargeted ? 0.85 : 0), lineWidth: 1.5)
+                .padding(.horizontal, 6)
+        }
+        .contentShape(Rectangle())
+        .dropDestination(for: URL.self) { urls, _ in
+            let imported = appState.importAndActivateProfiles(from: urls, forIdentity: identityKey)
+            if imported {
+                popoverChrome.animatingDisclosure {
+                    // Active profile replaced — collapse “Other Profiles” like a normal pick.
+                    otherProfilesProgress = 0
+                }
+            }
+            return imported
+        } isTargeted: { targeted in
+            isProfileDropTargeted = targeted
         }
         .onAppear {
             expandOtherProfilesWhenNoProfile(animated: false)
@@ -836,7 +1096,7 @@ private struct OutputEQPanel: View {
                             color: accent
                         )
                         .frame(height: MenuChrome.waveformHeight)
-                        .padding(.horizontal, MenuChrome.waveformHorizontalInset)
+                        .padding(.horizontal, MenuChrome.contentInset)
                         .padding(.top, MenuChrome.waveformSpacing)
                         .padding(.bottom, MenuChrome.waveformBottomPadding)
                     }
@@ -899,10 +1159,17 @@ private struct OutputEQPanel: View {
                             ForEach(otherProfiles) { profile in
                                 OtherProfileRow(
                                     profile: profile,
-                                    color: appState.colorHex(forProfile: profile.filename).asHexColor
+                                    color: appState.colorHex(
+                                        forProfile: profile.filename,
+                                        forIdentity: identityKey
+                                    ).asHexColor
                                 ) {
                                     popoverChrome.animatingDisclosure {
                                         appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                                    }
+                                } onDelete: {
+                                    popoverChrome.animatingDisclosure {
+                                        appState.deleteProfile(profile, forIdentity: identityKey)
                                     }
                                 }
                             }
@@ -926,7 +1193,9 @@ private struct OutputEQPanel: View {
 
     private var colorPopover: some View {
         let activeFilename = mapping.profileFilename
-        let selectedHex = activeFilename.map { appState.colorHex(forProfile: $0) } ?? mapping.colorHex
+        let selectedHex = activeFilename.map {
+            appState.colorHex(forProfile: $0, forIdentity: identityKey)
+        } ?? mapping.colorHex
         return HStack(spacing: 10) {
             ForEach(ProfileColorPalette.swatches, id: \.self) { hex in
                 Circle()
@@ -957,22 +1226,24 @@ private struct ProfileWaveformView: View {
     let preview: EQFrequencyResponsePreview?
     let color: Color
 
-    private static let horizontalInset: CGFloat = 6
     private static let verticalInset: CGFloat = 24
     private static let strokeWidth: CGFloat = 1.25
     private static let defaultHalfRangeDB: Double = 10
+    private static let underCurveTopOpacity: Double = 0.32
+    private static let curveBlackOverlayOpacity: Double = 0.20
 
     var body: some View {
         Canvas { context, size in
+            // Curve runs edge-to-edge in the container (no horizontal plot inset).
             let plot = CGRect(
-                x: Self.horizontalInset,
+                x: 0,
                 y: Self.verticalInset,
-                width: max(0, size.width - Self.horizontalInset * 2),
+                width: max(0, size.width),
                 height: max(0, size.height - Self.verticalInset * 2)
             )
             let style = StrokeStyle(
                 lineWidth: Self.strokeWidth,
-                lineCap: .round,
+                lineCap: .butt,
                 lineJoin: .round
             )
 
@@ -1003,18 +1274,37 @@ private struct ProfileWaveformView: View {
                 }
             }
 
-            context.stroke(path, with: .color(.primary), style: style)
+            var fill = path
+            fill.addLine(to: CGPoint(x: plot.maxX, y: size.height))
+            fill.addLine(to: CGPoint(x: plot.minX, y: size.height))
+            fill.closeSubpath()
+            context.fill(
+                fill,
+                with: .linearGradient(
+                    Gradient(colors: [
+                        color.opacity(Self.underCurveTopOpacity),
+                        color.opacity(0),
+                    ]),
+                    startPoint: CGPoint(x: plot.midX, y: plot.minY),
+                    endPoint: CGPoint(x: plot.midX, y: size.height)
+                )
+            )
+
+            // Profile color with a 20% black overlay.
+            context.stroke(path, with: .color(color), style: style)
+            context.stroke(path, with: .color(Color.black.opacity(Self.curveBlackOverlayOpacity)), style: style)
         }
         .background {
             RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [color.opacity(0.32), Color.primary.opacity(0.05)],
+                        colors: [Color.primary.opacity(0.05), Color.primary.opacity(0)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
         }
+        .clipShape(RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous))
         // Glass re-blends translucent pixels live; bake so the fade + line stay as authored.
         .drawingGroup()
         .accessibilityLabel("EQ frequency response")
@@ -1133,26 +1423,35 @@ private struct OtherProfileRow: View {
     let color: Color
     var isEnabled: Bool = true
     let action: () -> Void
+    var onDelete: (() -> Void)? = nil
 
     @State private var isHovering = false
 
-    init(profile: ProfileFile, color: Color, action: @escaping () -> Void) {
+    init(
+        profile: ProfileFile,
+        color: Color,
+        action: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
+    ) {
         self.title = profile.displayName
         self.color = color
         self.isEnabled = true
         self.action = action
+        self.onDelete = onDelete
     }
 
     init(
         title: String,
         color: Color,
         isEnabled: Bool = true,
-        action: @escaping () -> Void
+        action: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
     ) {
         self.title = title
         self.color = color
         self.isEnabled = isEnabled
         self.action = action
+        self.onDelete = onDelete
     }
 
     var body: some View {
@@ -1183,6 +1482,11 @@ private struct OtherProfileRow: View {
         .disabled(!isEnabled)
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
+        .contextMenu {
+            if let onDelete {
+                Button("Delete", role: .destructive, action: onDelete)
+            }
+        }
     }
 }
 

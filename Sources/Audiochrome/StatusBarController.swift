@@ -166,6 +166,8 @@ final class StatusBarController: NSObject, ObservableObject {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = false
+        // Finder → menu drops (EQ profile import).
+        panel.registerForDraggedTypes([.fileURL])
         // IMPORTANT: invalid combinations abort on modern macOS via _validateCollectionBehavior.
         // Do not mix .moveToActiveSpace with .canJoinAllSpaces.
         // Omit .canJoinAllSpaces so the panel doesn’t ride along when changing Spaces —
@@ -406,7 +408,9 @@ final class StatusBarController: NSObject, ObservableObject {
     private func startDismissMonitors() {
         stopDismissMonitors()
 
-        globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        // Mouse-up (not down) so a Finder drag can enter the panel — mouse-down
+        // outside would dismiss before dropDestination runs.
+        globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) { [weak self] _ in
             guard let self, self.isPresented else { return }
             if self.isMouseInStatusItem() { return }
             if self.isMouseOverMenuChrome() { return }

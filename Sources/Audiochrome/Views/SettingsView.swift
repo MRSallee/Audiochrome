@@ -6,49 +6,53 @@ struct SettingsView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            settingsRow(
-                title: "Open at Login",
-                isOn: Binding(
-                    get: { appState.config.openAtLogin },
-                    set: { appState.setOpenAtLogin($0) }
+        VStack(alignment: .leading, spacing: 9) {
+            AudiochromeBrandLockup()
+                .padding(.horizontal, 6)
+
+            VStack(alignment: .leading, spacing: 0) {
+                settingsRow(
+                    title: "Open at Login",
+                    isOn: Binding(
+                        get: { appState.config.openAtLogin },
+                        set: { appState.setOpenAtLogin($0) }
+                    )
                 )
+                Divider().padding(.leading, 14)
+                settingsRow(
+                    title: "Animated Menu Bar Icon",
+                    isOn: Binding(
+                        get: { appState.config.animatedMenuBarIcon },
+                        set: { appState.setAnimatedMenuBarIcon($0) }
+                    )
+                )
+                Divider().padding(.leading, 14)
+                settingsRow(
+                    title: "Active EQ Reminders",
+                    isOn: Binding(
+                        get: { appState.config.activeEQReminders },
+                        set: { appState.setActiveEQReminders($0) }
+                    )
+                )
+                Divider().padding(.leading, 14)
+                settingsRow(
+                    title: "Custom EQ per device",
+                    subtitle: "Premium",
+                    isOn: Binding(
+                        get: { appState.config.customEQPerDevice },
+                        set: { appState.setCustomEQPerDevice($0) }
+                    )
+                )
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
             )
-            Divider().padding(.leading, 14)
-            settingsRow(
-                title: "Animated Menu Bar Icon",
-                isOn: Binding(
-                    get: { appState.config.animatedMenuBarIcon },
-                    set: { appState.setAnimatedMenuBarIcon($0) }
-                )
-            )
-            Divider().padding(.leading, 14)
-            settingsRow(
-                title: "Active EQ Reminders",
-                subtitle: "Premium",
-                isOn: Binding(
-                    get: { appState.config.activeEQReminders },
-                    set: { appState.setActiveEQReminders($0) }
-                )
-            )
-            Divider().padding(.leading, 14)
-            settingsRow(
-                title: "Custom EQ per device",
-                subtitle: "Premium",
-                isOn: Binding(
-                    get: { appState.config.customEQPerDevice },
-                    set: { appState.setCustomEQPerDevice($0) }
-                )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
         }
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
         .padding(20)
         .frame(width: 420)
         .onAppear {

@@ -125,10 +125,21 @@ public final class EQProcessor: @unchecked Sendable {
         var signature: String
     }
 
+    private struct Crossfade {
+        var from: Bank
+        var position: Int
+        var length: Int
+    }
+
+    /// Equal-power crossfade length when switching curves / bypassing.
+    public static let crossfadeSeconds = 0.012
+
     /// Only touched by the audio thread after swap (plus brief lock during swap).
     private var current = Bank(left: [], right: [], leftGain: 1, rightGain: 1, sampleRate: 48_000, signature: "")
     private var pending: Bank?
     private var publishedSignature = ""
+    /// Audio-thread only: previous bank while fading into `current`.
+    private var crossfade: Crossfade?
     private let lock = NSLock()
 
     public init() {}
@@ -161,7 +172,8 @@ public final class EQProcessor: @unchecked Sendable {
 
     public func clear() {
         lock.lock()
-        pending = Bank(left: [], right: [], leftGain: 1, rightGain: 1, sampleRate: current.sampleRate, signature: "clear")
+        let rate = pending?.sampleRate ?? current.sampleRate
+        pending = Bank(left: [], right: [], leftGain: 1, rightGain: 1, sampleRate: rate, signature: "clear")
         publishedSignature = "clear"
         lock.unlock()
     }
@@ -204,6 +216,16 @@ public final class EQProcessor: @unchecked Sendable {
         case left, right
     }
 
+    /// Call once per IO callback before planar `processMono` passes.
+    public func beginRender() {
+        adoptPendingIfNeeded()
+    }
+
+    /// Advance crossfade after both planar channels have been processed for `frames`.
+    public func endRender(frames: UInt32) {
+        advanceCrossfade(by: Int(frames))
+    }
+
     /// Process interleaved samples in place. Audio-thread only.
     public func processInterleaved(_ buffer: UnsafeMutablePointer<Float>, frames: UInt32, channels: UInt32) {
         guard frames > 0, channels > 0 else { return }
@@ -211,63 +233,123 @@ public final class EQProcessor: @unchecked Sendable {
 
         let frameCount = Int(frames)
         let ch = Int(channels)
-        let lg = current.leftGain
-        let rg = current.rightGain
 
         for i in 0..<frameCount {
             let base = i * ch
-            var leftSample = Double(buffer[base]) * lg
-            for idx in current.left.indices {
-                leftSample = current.left[idx].process(leftSample)
-            }
-            buffer[base] = Float(leftSample)
+            let weights = crossfadeWeights(at: i)
+            buffer[base] = Float(
+                processSample(
+                    Double(buffer[base]),
+                    channel: .left,
+                    fromWeight: weights.from,
+                    toWeight: weights.to
+                )
+            )
 
             if ch > 1 {
-                var rightSample = Double(buffer[base + 1]) * rg
-                for idx in current.right.indices {
-                    rightSample = current.right[idx].process(rightSample)
-                }
-                buffer[base + 1] = Float(rightSample)
+                buffer[base + 1] = Float(
+                    processSample(
+                        Double(buffer[base + 1]),
+                        channel: .right,
+                        fromWeight: weights.from,
+                        toWeight: weights.to
+                    )
+                )
                 // Extra channels: gain only — never run L/R filter state on them.
                 if ch > 2 {
+                    let gain = current.leftGain * weights.to
+                        + (crossfade?.from.leftGain ?? current.leftGain) * weights.from
                     for c in 2..<ch {
-                        buffer[base + c] = Float(Double(buffer[base + c]) * lg)
+                        buffer[base + c] = Float(Double(buffer[base + c]) * gain)
                     }
                 }
             }
         }
+
+        advanceCrossfade(by: frameCount)
     }
 
     /// Process one mono (planar) channel in place. Audio-thread only.
+    /// Call `beginRender()` before the first channel and `endRender(frames:)` after the last.
     public func processMono(_ buffer: UnsafeMutablePointer<Float>, frames: UInt32, channel: Channel) {
         guard frames > 0 else { return }
-        adoptPendingIfNeeded()
 
         let frameCount = Int(frames)
-        let gain = channel == .left ? current.leftGain : current.rightGain
-
         for i in 0..<frameCount {
-            var sample = Double(buffer[i]) * gain
-            if channel == .left {
-                for idx in current.left.indices {
-                    sample = current.left[idx].process(sample)
-                }
-            } else {
-                for idx in current.right.indices {
-                    sample = current.right[idx].process(sample)
-                }
-            }
-            buffer[i] = Float(sample)
+            let weights = crossfadeWeights(at: i)
+            buffer[i] = Float(
+                processSample(
+                    Double(buffer[i]),
+                    channel: channel,
+                    fromWeight: weights.from,
+                    toWeight: weights.to
+                )
+            )
         }
+    }
+
+    private func processSample(
+        _ x: Double,
+        channel: Channel,
+        fromWeight: Double,
+        toWeight: Double
+    ) -> Double {
+        let to = runBank(&current, channel: channel, input: x)
+        guard fromWeight > 0, var fade = crossfade else { return to }
+        let from = runBank(&fade.from, channel: channel, input: x)
+        crossfade?.from = fade.from
+        return from * fromWeight + to * toWeight
+    }
+
+    private func runBank(_ bank: inout Bank, channel: Channel, input: Double) -> Double {
+        let gain = channel == .left ? bank.leftGain : bank.rightGain
+        var sample = input * gain
+        if channel == .left {
+            for idx in bank.left.indices {
+                sample = bank.left[idx].process(sample)
+            }
+        } else {
+            for idx in bank.right.indices {
+                sample = bank.right[idx].process(sample)
+            }
+        }
+        return sample
+    }
+
+    private func crossfadeWeights(at offset: Int) -> (from: Double, to: Double) {
+        guard let fade = crossfade else { return (0, 1) }
+        let t = min(1, max(0, Double(fade.position + offset) / Double(fade.length)))
+        // Equal-power: constant perceived level across the splice.
+        let to = sin(t * Double.pi * 0.5)
+        let from = cos(t * Double.pi * 0.5)
+        return (from, to)
     }
 
     private func adoptPendingIfNeeded() {
         lock.lock()
-        if let pending {
-            current = pending
-            self.pending = nil
-        }
+        let next = pending
+        pending = nil
         lock.unlock()
+
+        guard let next else { return }
+        if current.signature == next.signature {
+            return
+        }
+
+        let rate = max(next.sampleRate, current.sampleRate, 1)
+        let length = max(1, Int((rate * Self.crossfadeSeconds).rounded()))
+        crossfade = Crossfade(from: current, position: 0, length: length)
+        current = next
+    }
+
+    private func advanceCrossfade(by frames: Int) {
+        guard frames > 0, var fade = crossfade else { return }
+        fade.position += frames
+        if fade.position >= fade.length {
+            crossfade = nil
+        } else {
+            crossfade = fade
+        }
     }
 
     private static func signature(for profile: EQProfile, sampleRate: Double) -> String {

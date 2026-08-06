@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v0.9.0** — Custom status-item panel, optional Custom EQ per device (shared “All Audio” when off), Quit & Relaunch for privacy grants, and settings/login-item support.  
+> **v1.0.0** — Menu-bar system EQ with per-output profiles, drag-and-drop import, smoother on/off transitions, seeded Documents profiles, and a packaged `.app`.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
@@ -16,8 +16,8 @@ macOS menu bar app for system-wide EQ, with per-output profile mapping.
 # Parser / device smoke checks (no full Xcode / XCTest required)
 swift run AudiochromeSmoke
 
-# Build a menu-bar .app (no Dock icon) and launch
-./Scripts/package-app.sh
+# Build a menu-bar .app (release) and launch
+./Scripts/package-app.sh release
 open .build/Audiochrome.app
 ```
 
@@ -32,10 +32,10 @@ swift run Audiochrome
 Place Equalizer APO / Squiglink `.txt` files in:
 
 ```text
-~/Library/Application Support/Audiochrome/Profiles/
+~/Documents/Audiochrome/EQ profiles/
 ```
 
-The folder button in the menu opens that directory in Finder. Config (per-device enable, profile, color) is stored in:
+On first launch Audiochrome creates that folder and seeds a few starter profiles. Change Folder… on an output can point at any other directory. Config (per-device enable, profile, color) stays in:
 
 ```text
 ~/Library/Application Support/Audiochrome/config.json
@@ -50,8 +50,8 @@ Supported profile shapes:
 
 | Piece | Role |
 |-------|------|
-| `Audiochrome` | SwiftUI `MenuBarExtra` UI |
-| `AudiochromeCore` | Parser, config, devices, stub audio engine |
-| `StubAudioEngine` | Fallback stub |
+| `Audiochrome` | Status-item panel UI (AppKit + SwiftUI) |
+| `AudiochromeCore` | Parser, config, devices, engine orchestration |
 | `ProcessTapAudioEngine` | System-wide EQ via process tap + aggregate replay |
 | `EQProcessor` | Parametric biquads (Squiglink / APO), L/R + preamp |
+| `StubAudioEngine` | Fallback when process tap is unavailable |

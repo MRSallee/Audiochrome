@@ -41,6 +41,9 @@ public protocol AudioEngine: AnyObject {
     var outputLevel: Float { get }
     func apply(profile: EQProfile, to device: AudioOutputDevice, colorHex: String) throws
     func stop(reason: AudioEngineStopReason)
+    /// Fade EQ to passthrough while keeping the capture path alive (avoids reconnect pops).
+    /// Implementations may fully release later once audio has been silent.
+    func bypass()
 }
 
 /// Placeholder engine that tracks desired state without touching the audio path.
@@ -70,5 +73,10 @@ public final class StubAudioEngine: AudioEngine, @unchecked Sendable {
         case .engineError:
             status = .unavailable("Audio engine error.")
         }
+    }
+
+    public func bypass() {
+        lastProfileName = nil
+        status = .idle
     }
 }

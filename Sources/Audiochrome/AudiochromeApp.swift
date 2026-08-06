@@ -24,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        let state = AppState()
+        let state = AppState(
+            profileStore: ProfileStore(bundledDefaultProfiles: DefaultEQProfiles.bundledURLs)
+        )
         appState = state
         EQStatusNotifier.shared.configure()
         statusBar = StatusBarController(appState: state)

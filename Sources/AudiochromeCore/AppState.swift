@@ -194,6 +194,8 @@ public final class AppState: ObservableObject {
         refreshAll()
         warmProfileFolderAccess()
         restoreEngineIfNeeded()
+        // Often still idle here — process taps need a beat. Retries below re-notify
+        // once `isEQEngaged` is true (deduped so a fast first engage isn’t double-posted).
         notifyActiveEQStatus(reason: .launch)
         eqStatusNotificationsReady = true
         startAudioPermissionPolling()
@@ -202,7 +204,11 @@ public final class AppState: ObservableObject {
         let delays: [TimeInterval] = [0.25, 0.8, 1.8, 3.5]
         for delay in delays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.restoreEngineIfNeeded()
+                guard let self else { return }
+                self.restoreEngineIfNeeded()
+                if self.isEQEngaged {
+                    self.notifyActiveEQStatus(reason: .launch)
+                }
             }
         }
     }
@@ -288,7 +294,8 @@ public final class AppState: ObservableObject {
         guard isEQEngaged, let mapping = activeMapping else {
             return Color(nsColor: .labelColor)
         }
-        let hex = mapping.profileFilename.map { colorHex(forProfile: $0) } ?? mapping.colorHex
+        let hex = mapping.profileFilename.map { colorHex(forProfile: $0, forIdentity: activeMappingIdentityKey) }
+            ?? mapping.colorHex
         return Color(hex: hex) ?? .accentColor
     }
 
@@ -352,8 +359,8 @@ public final class AppState: ObservableObject {
             lastEQStatusNotifiedIdentityKey = hardwareKey
             return
         }
-        // Dedupe on hardware identity so output switches still remind in shared mode.
-        if reason == .outputChanged, hardwareKey == lastEQStatusNotifiedIdentityKey {
+        // Dedupe on hardware identity (launch retries + output switches in shared mode).
+        if hardwareKey == lastEQStatusNotifiedIdentityKey {
             return
         }
         lastEQStatusNotifiedIdentityKey = hardwareKey
@@ -370,7 +377,7 @@ public final class AppState: ObservableObject {
             ?? (filename as NSString).deletingPathExtension
         let folderName = profilesDirectoryURL(forIdentity: mappingKey).lastPathComponent
 
-        let colorHex = config.colorHex(forProfile: filename)
+        let profileColorHex = colorHex(forProfile: filename, forIdentity: mappingKey)
         switch reason {
         case .launch:
             // Give notification auth a beat so the first banner isn’t dropped.
@@ -378,19 +385,19 @@ public final class AppState: ObservableObject {
                 outputName: outputName,
                 profileDisplayName: profileName,
                 folderName: folderName,
-                colorHex: colorHex
+                colorHex: profileColorHex
             )
         case .outputChanged:
             EQStatusNotifier.shared.notifyActiveEQ(
                 outputName: outputName,
                 profileDisplayName: profileName,
                 folderName: folderName,
-                colorHex: colorHex
+                colorHex: profileColorHex
             )
         }
     }
 
-    /// Folder of `.txt` profiles for a given output (`nil` path → default App Support folder).
+    /// Folder of `.txt` profiles for a given output (`nil` path → Documents/Audiochrome/EQ profiles).
     public func profilesDirectoryURL(forIdentity identityKey: String) -> URL {
         let key = mappingIdentityKey(for: identityKey)
         let path = config.mapping(forIdentity: key).profilesDirectoryPath?
@@ -525,7 +532,7 @@ public final class AppState: ObservableObject {
         if let filename {
             mapping.enabled = true
             // Color follows the profile.
-            mapping.colorHex = config.colorHex(forProfile: filename)
+            mapping.colorHex = colorHex(forProfile: filename, forIdentity: key)
         } else {
             mapping.enabled = false
         }
@@ -533,6 +540,64 @@ public final class AppState: ObservableObject {
         configStore.save(config)
         objectWillChange.send()
         syncEngine()
+    }
+
+    /// Copy dropped `.txt` EQ profiles into this output’s folder and activate the first one.
+    @discardableResult
+    public func importAndActivateProfiles(from urls: [URL], forIdentity identityKey: String) -> Bool {
+        let key = mappingIdentityKey(for: identityKey)
+        let directory = profilesDirectoryURL(forIdentity: key)
+        var importedFilenames: [String] = []
+
+        for url in urls {
+            guard ProfileStore.isEQProfileFile(url) else { continue }
+            do {
+                let profile = try profileStore.importProfile(from: url, into: directory)
+                importedFilenames.append(profile.filename)
+            } catch {
+                continue
+            }
+        }
+
+        guard let filename = importedFilenames.first else { return false }
+        setProfile(forIdentity: key, filename: filename)
+        return true
+    }
+
+    /// Deletes a profile `.txt` from this output’s folder and clears selections that used it there.
+    public func deleteProfile(_ profile: ProfileFile, forIdentity identityKey: String) {
+        let key = mappingIdentityKey(for: identityKey)
+        let directory = profilesDirectoryURL(forIdentity: key)
+        let directoryURL = directory.resolvingSymlinksInPath().standardizedFileURL
+
+        do {
+            try profileStore.deleteProfileFile(at: profile.url, under: directory)
+        } catch {
+            return
+        }
+
+        config.profileColors.removeValue(forKey: profile.filename)
+
+        var clearedActiveMapping = false
+        for (outputKey, var mapping) in config.outputs {
+            guard mapping.profileFilename == profile.filename else { continue }
+            let outputDir = profilesDirectoryURL(forIdentity: outputKey)
+                .resolvingSymlinksInPath()
+                .standardizedFileURL
+            guard outputDir == directoryURL else { continue }
+            mapping.profileFilename = nil
+            mapping.enabled = false
+            config.setMapping(mapping, forIdentity: outputKey)
+            if outputKey == activeMappingIdentityKey {
+                clearedActiveMapping = true
+            }
+        }
+
+        configStore.save(config)
+        objectWillChange.send()
+        if clearedActiveMapping {
+            syncEngine()
+        }
     }
 
     /// Sets the color mapped to a profile; updates every output currently using it.
@@ -562,8 +627,11 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func colorHex(forProfile filename: String) -> String {
-        config.colorHex(forProfile: filename)
+    /// Profile color: saved picker value, else palette index by A→Z order in that output’s folder.
+    public func colorHex(forProfile filename: String, forIdentity identityKey: String? = nil) -> String {
+        let key = identityKey.map { mappingIdentityKey(for: $0) } ?? activeMappingIdentityKey
+        let peers = key.map { profiles(forIdentity: $0).map(\.filename) } ?? [filename]
+        return config.colorHex(forProfile: filename, among: peers)
     }
 
     /// Log-spaced EQ magnitude curve (dB) for the active output’s selected profile.
@@ -751,6 +819,10 @@ public final class AppState: ObservableObject {
         lastSyncedProfile = nil
         syncEngine()
         objectWillChange.send()
+        // Permission grants / late engages often land here after the launch notify raced.
+        if eqStatusNotificationsReady, isEQEngaged {
+            notifyActiveEQStatus(reason: .outputChanged)
+        }
     }
 
     private var lastSyncedDefaultUID: String?
@@ -836,8 +908,15 @@ public final class AppState: ObservableObject {
         let mappingKey = mappingIdentityKey(for: defaultIdentityKey)
         let mapping = config.mapping(forIdentity: mappingKey)
         guard mapping.enabled, let filename = mapping.profileFilename else {
-            if lastSyncedEnabled != false || lastSyncedDefaultUID != device.uid {
-                audioEngine.stop(reason: .disabled)
+            let deviceChanged = lastSyncedDefaultUID != nil && lastSyncedDefaultUID != device.uid
+            if deviceChanged {
+                // Output moved while EQ was off — tear down the old tap.
+                audioEngine.stop(reason: .outputChanged)
+            } else if lastSyncedEnabled != false {
+                // Soft off: fade to passthrough; tap stays warm until audio goes silent.
+                audioEngine.bypass()
+            }
+            if deviceChanged || lastSyncedEnabled != false {
                 lastSyncedDefaultUID = device.uid
                 lastSyncedEnabled = false
                 lastSyncedProfile = nil

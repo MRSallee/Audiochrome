@@ -1,0 +1,2 @@
+Preamp: -4.8637 dB
+Filter 1: ON LSC Fc 80 Hz Gain 5 dB Q 0.6

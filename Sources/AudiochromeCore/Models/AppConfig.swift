@@ -4,7 +4,7 @@ public struct OutputMapping: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var profileFilename: String?
     public var colorHex: String
-    /// Absolute path to this output’s EQ profile folder. `nil` = default App Support Profiles folder.
+    /// Absolute path to this output’s EQ profile folder. `nil` = `~/Documents/Audiochrome/EQ profiles`.
     public var profilesDirectoryPath: String?
 
     public init(
@@ -19,10 +19,18 @@ public struct OutputMapping: Codable, Equatable, Sendable {
         self.profilesDirectoryPath = profilesDirectoryPath
     }
 
-    public static func defaultColorHex(for filename: String) -> String {
+    /// Color for `filename` by A→Z order among `filenames`, looping the palette.
+    public static func defaultColorHex(for filename: String, among filenames: [String]) -> String {
         let palette = ProfileColorPalette.swatches
-        let hash = filename.unicodeScalars.reduce(0) { ($0 &* 31) &+ Int($1.value) }
-        return palette[abs(hash) % palette.count]
+        let sorted = filenames.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        guard let index = sorted.firstIndex(where: {
+            $0.caseInsensitiveCompare(filename) == .orderedSame
+        }) else {
+            return palette[0]
+        }
+        return palette[index % palette.count]
     }
 }
 
@@ -94,6 +102,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var knownOutputs: [String: KnownOutput]
     /// Colors keyed by profile filename — color belongs to the profile, not the output.
     public var profileColors: [String: String]
+    /// 1 = alphabetical palette defaults (clears hash-era saved colors once).
+    public var colorAssignmentVersion: Int
     /// Launch Audiochrome when the user logs in. Mirrored to `SMAppService`.
     public var openAtLogin: Bool
     /// Post a banner when EQ is engaged on launch / output change.
@@ -107,6 +117,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         outputs: [String: OutputMapping] = [:],
         knownOutputs: [String: KnownOutput] = [:],
         profileColors: [String: String] = [:],
+        colorAssignmentVersion: Int = 1,
         openAtLogin: Bool = false,
         activeEQReminders: Bool = true,
         customEQPerDevice: Bool = true,
@@ -115,6 +126,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.outputs = outputs
         self.knownOutputs = knownOutputs
         self.profileColors = profileColors
+        self.colorAssignmentVersion = colorAssignmentVersion
         self.openAtLogin = openAtLogin
         self.activeEQReminders = activeEQReminders
         self.customEQPerDevice = customEQPerDevice
@@ -126,6 +138,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         outputs = try container.decodeIfPresent([String: OutputMapping].self, forKey: .outputs) ?? [:]
         knownOutputs = try container.decodeIfPresent([String: KnownOutput].self, forKey: .knownOutputs) ?? [:]
         profileColors = try container.decodeIfPresent([String: String].self, forKey: .profileColors) ?? [:]
+        colorAssignmentVersion = try container.decodeIfPresent(Int.self, forKey: .colorAssignmentVersion) ?? 0
         openAtLogin = try container.decodeIfPresent(Bool.self, forKey: .openAtLogin) ?? false
         activeEQReminders = try container.decodeIfPresent(Bool.self, forKey: .activeEQReminders) ?? true
         customEQPerDevice = try container.decodeIfPresent(Bool.self, forKey: .customEQPerDevice) ?? true
@@ -156,20 +169,27 @@ public struct AppConfig: Codable, Equatable, Sendable {
         }
         outputs = migratedOutputs
 
-        // Seed profileColors from existing per-output colors when missing.
-        for mapping in outputs.values {
-            guard let filename = mapping.profileFilename, !filename.isEmpty else { continue }
-            if profileColors[filename] == nil || profileColors[filename]?.isEmpty == true {
-                profileColors[filename] = mapping.colorHex
+        // Drop hash-era saved colors so A→Z palette defaults apply; picker choices after this stick.
+        if colorAssignmentVersion < 1 {
+            profileColors = [:]
+            colorAssignmentVersion = 1
+        } else {
+            // Seed profileColors from existing per-output colors when missing.
+            for mapping in outputs.values {
+                guard let filename = mapping.profileFilename, !filename.isEmpty else { continue }
+                if profileColors[filename] == nil || profileColors[filename]?.isEmpty == true {
+                    profileColors[filename] = mapping.colorHex
+                }
             }
         }
     }
 
-    public func colorHex(forProfile filename: String) -> String {
+    public func colorHex(forProfile filename: String, among filenames: [String] = []) -> String {
         if let hex = profileColors[filename]?.trimmingCharacters(in: .whitespacesAndNewlines), !hex.isEmpty {
             return hex
         }
-        return OutputMapping.defaultColorHex(for: filename)
+        let peers = filenames.isEmpty ? [filename] : filenames
+        return OutputMapping.defaultColorHex(for: filename, among: peers)
     }
 
     public mutating func setColorHex(_ hex: String, forProfile filename: String) {

@@ -20,8 +20,15 @@ let package = Package(
             name: "Audiochrome",
             dependencies: ["AudiochromeCore"],
             path: "Sources/Audiochrome",
+            // AppIcon is copied into the .app by Scripts/package-app.sh (Finder icon).
+            exclude: [
+                "Resources/AppIcon.icns",
+                "Resources/AppIcon-1024.png"
+            ],
             resources: [
-                .process("Resources")
+                .process("Resources/AudiochromeLogo.png"),
+                // Keep as a directory so first-launch seeding can find DefaultEQProfiles/*.txt.
+                .copy("Resources/DefaultEQProfiles")
             ]
         ),
         .executableTarget(

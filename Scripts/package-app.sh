@@ -55,6 +55,19 @@ if [[ -f "$LOGO_SRC" ]]; then
   cp "$LOGO_SRC" "$APP_DIR/Contents/Resources/AudiochromeLogo.png"
 fi
 
+# Finder / Get Info app icon.
+ICON_SRC="$ROOT/Sources/Audiochrome/Resources/AppIcon.icns"
+if [[ -f "$ICON_SRC" ]]; then
+  cp "$ICON_SRC" "$APP_DIR/Contents/Resources/AppIcon.icns"
+fi
+
+# Starter EQ profiles (first-launch seed into ~/Documents/Audiochrome/EQ profiles).
+DEFAULT_EQ_SRC="$ROOT/Sources/Audiochrome/Resources/DefaultEQProfiles"
+if [[ -d "$DEFAULT_EQ_SRC" ]]; then
+  rm -rf "$APP_DIR/Contents/Resources/DefaultEQProfiles"
+  cp -R "$DEFAULT_EQ_SRC" "$APP_DIR/Contents/Resources/DefaultEQProfiles"
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -64,6 +77,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>Audiochrome</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>app.audiochrome.Audiochrome</string>
 	<key>CFBundleName</key>
@@ -71,9 +86,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.0</string>
+	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>10</string>
+	<string>11</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.2</string>
 	<key>LSUIElement</key>

@@ -20,6 +20,15 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     private var currentProfileName: String?
     private var sampleRate: Double = 48_000
 
+    /// Warm bypass (EQ off, tap still up): release after sustained digital silence.
+    private let silenceLock = NSLock()
+    private var warmBypassActive = false
+    private var bypassSilentFrames = 0
+    private var silenceTeardownWorkItem: DispatchWorkItem?
+    /// ~-60 dBFS; below this counts as “not playing” for warm-bypass release.
+    private static let silencePeakThreshold: Float = 0.001
+    private static let silenceReleaseSeconds: Double = 1.0
+
     public init() {}
 
     /// Smoothed peak magnitude of the EQ'd output (0…1). Safe to read from the main thread.
@@ -37,6 +46,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         _ = colorHex
         stateLock.lock()
         defer { stateLock.unlock() }
+
+        clearWarmBypassTrackingUnlocked()
 
         // Same device + engine running: only publish a new curve if it actually changed.
         // (Avoids resetting biquad state every UI poll — that caused periodic pops.)
@@ -80,6 +91,38 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             }
         }
         stateLock.unlock()
+    }
+
+    /// Soft EQ off: crossfade to unity and keep the tap/aggregate alive.
+    /// Fully releases once output stays silent for a couple of seconds (see silence tracking).
+    /// Immediate teardown still happens on quit, output change, or permission loss (`stop`).
+    public func bypass() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard aggregateID != kAudioObjectUnknown else {
+            status = .idle
+            currentProfileName = nil
+            clearWarmBypassTrackingUnlocked()
+            return
+        }
+        processor.clear()
+        currentProfileName = nil
+        status = .idle
+        silenceLock.lock()
+        warmBypassActive = true
+        bypassSilentFrames = 0
+        silenceTeardownWorkItem?.cancel()
+        silenceTeardownWorkItem = nil
+        silenceLock.unlock()
+    }
+
+    private func clearWarmBypassTrackingUnlocked() {
+        silenceLock.lock()
+        warmBypassActive = false
+        bypassSilentFrames = 0
+        silenceTeardownWorkItem?.cancel()
+        silenceTeardownWorkItem = nil
+        silenceLock.unlock()
     }
 
     // MARK: - Start / stop
@@ -252,6 +295,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
     private func teardownUnlocked(reason: AudioEngineStopReason) {
         _ = reason
+        clearWarmBypassTrackingUnlocked()
+
         if let procID = ioProcID, aggregateID != kAudioObjectUnknown {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -304,12 +349,16 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         // Planar (one buffer per channel, common for aggregates) vs interleaved.
         let planar = outBuffers.count > 1 && outBuffers.allSatisfy { $0.mNumberChannels <= 1 }
         if planar {
+            engine.processor.beginRender()
+            var renderedFrames: UInt32 = 0
             for (index, outBuffer) in outBuffers.enumerated() {
                 guard let outPtr = outBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
                 let frames = outBuffer.mDataByteSize / UInt32(MemoryLayout<Float>.size)
                 let channel: EQProcessor.Channel = (index == 1) ? .right : .left
                 engine.processor.processMono(outPtr, frames: frames, channel: channel)
+                if index == 0 { renderedFrames = frames }
             }
+            engine.processor.endRender(frames: renderedFrames)
         } else {
             for outBuffer in outBuffers {
                 guard let outPtr = outBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
@@ -325,9 +374,13 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
     private func updateMeter(from buffers: UnsafeMutableAudioBufferListPointer) {
         var peak: Float = 0
+        var frameHint = 0
         for buffer in buffers {
             guard let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
             let count = Int(buffer.mDataByteSize / UInt32(MemoryLayout<Float>.size))
+            let channels = max(Int(buffer.mNumberChannels), 1)
+            let frames = count / channels
+            if frames > frameHint { frameHint = frames }
             for i in 0..<count {
                 let a = abs(ptr[i])
                 if a > peak { peak = a }
@@ -344,6 +397,56 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             if meterLevel < 0.008 { meterLevel = 0 }
         }
         meterLock.unlock()
+
+        notePeakForWarmBypassRelease(peak, frames: frameHint)
+    }
+
+    /// While EQ is soft-off, tear down the tap after sustained silence so we don’t keep it forever.
+    private func notePeakForWarmBypassRelease(_ peak: Float, frames: Int) {
+        guard frames > 0 else { return }
+
+        silenceLock.lock()
+        guard warmBypassActive else {
+            silenceLock.unlock()
+            return
+        }
+
+        if peak < Self.silencePeakThreshold {
+            bypassSilentFrames += frames
+            let rate = max(sampleRate, 1)
+            let needed = Int(rate * Self.silenceReleaseSeconds)
+            let shouldRelease = bypassSilentFrames >= needed && silenceTeardownWorkItem == nil
+            if shouldRelease {
+                let item = DispatchWorkItem { [weak self] in
+                    self?.releaseWarmBypassAfterSilence()
+                }
+                silenceTeardownWorkItem = item
+                silenceLock.unlock()
+                DispatchQueue.main.async(execute: item)
+                return
+            }
+        } else {
+            bypassSilentFrames = 0
+            silenceTeardownWorkItem?.cancel()
+            silenceTeardownWorkItem = nil
+        }
+        silenceLock.unlock()
+    }
+
+    private func releaseWarmBypassAfterSilence() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        silenceLock.lock()
+        silenceTeardownWorkItem = nil
+        let stillWarm = warmBypassActive && currentProfileName == nil
+        silenceLock.unlock()
+
+        guard stillWarm, aggregateID != kAudioObjectUnknown else { return }
+        if case .engaged = status { return }
+
+        teardownUnlocked(reason: .disabled)
+        status = .idle
     }
 
     // MARK: - Core Audio helpers
