@@ -180,13 +180,10 @@ struct MenuBarView: View {
         focusActiveOutput(animated: false)
     }
 
-    /// Brand band between device list and Settings — replaces a plain divider.
+    /// Brand band between device list and Settings — stacked edge-to-edge rule above the wordmark.
     private var logoBreak: some View {
         VStack(spacing: 0) {
-            // Skip when “Other Devices” is already the row above — no double rule under it.
-            if unlistedDevices.isEmpty {
-                Divider().padding(.horizontal, MenuChrome.dividerInset)
-            }
+            brandBandDivider
             AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight)
                 .padding(.horizontal, MenuChrome.contentInset)
                 .padding(.top, MenuChrome.logoBreakTopPadding)
@@ -196,6 +193,19 @@ struct MenuBarView: View {
                 // Match Settings row highlight’s trailing inset.
                 .padding(.bottom, MenuChrome.highlightInset)
         }
+    }
+
+    /// 1pt separator + softer ~4pt band, full window width (not inset).
+    private var brandBandDivider: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: MenuChrome.brandBandRuleHeight)
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(0.35))
+                .frame(height: MenuChrome.brandBandShadeHeight)
+        }
+        .accessibilityHidden(true)
     }
 
     // MARK: - Output headers (active + inactive share the same chrome)
@@ -811,6 +821,9 @@ private enum MenuChrome {
     static let logoHeight: CGFloat = 20
     static let logoBreakBottomPadding: CGFloat = 9
     static let logoBreakTopPadding: CGFloat = 28
+    /// Edge-to-edge stacked rule above the brand lockup.
+    static let brandBandRuleHeight: CGFloat = 1
+    static let brandBandShadeHeight: CGFloat = 4
     /// Dimmed chrome below the audio-permission CTA.
     static let permissionLockedOpacity: Double = 0.4
 

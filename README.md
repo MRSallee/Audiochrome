@@ -16,10 +16,16 @@ macOS menu bar app for system-wide EQ, with per-output profile mapping.
 # Parser / device smoke checks (no full Xcode / XCTest required)
 swift run AudiochromeSmoke
 
-# Build a menu-bar .app (release) and launch
+# Local debug .app (ad-hoc sign)
+./Scripts/package-app.sh debug
+
+# Distributable release: Developer ID sign → notarize → staple → zip
 ./Scripts/package-app.sh release
 open .build/Audiochrome.app
+# Share: .build/Audiochrome-<version>.zip
 ```
+
+Requires a **Developer ID Application** cert and `notarytool` profile `Audiochrome` (see `xcrun notarytool store-credentials`). Skip notarization with `SKIP_NOTARIZE=1`.
 
 Or run the binary directly:
 
