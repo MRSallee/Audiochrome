@@ -549,7 +549,11 @@ private enum MenuChrome {
     static let sectionToContentSpacing: CGFloat = 6
     static let waveformSpacing: CGFloat = 6
     static let waveformBottomPadding: CGFloat = 8
-    static let noProfileBottomPadding: CGFloat = 8
+    /// Gap under the “No Profile” row. Chosen so
+    /// `waveformSpacing + waveformHeight + waveformBottomPadding - noProfileBottomPadding`
+    /// equals one Other Profiles row pitch (34 + 2). Selecting/clearing a profile then
+    /// trades the waveform for a list row with no net panel height change.
+    static let noProfileBottomPadding: CGFloat = 6
     static let otherProfilesSectionVerticalPadding: CGFloat = 6
 
     static let headerFontSize: CGFloat = 13
@@ -616,6 +620,13 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
+    /// One Other Profiles row including the spacing beneath it. Selecting a profile removes
+    /// one row from that list and adds a waveform of the same height (see
+    /// `MenuChrome.noProfileBottomPadding`), so the panel doesn’t jump.
+    static var otherProfileRowPitch: CGFloat {
+        iconRowHeight + disclosureRowSpacing
+    }
+
     static func otherProfilesListHeight(count: Int) -> CGFloat {
         let c = CGFloat(max(0, count))
         guard c > 0 else { return 0 }
@@ -658,10 +669,11 @@ private enum OutputEQPanelMetrics {
         height += MenuChrome.sectionRowHeight
         height += MenuChrome.sectionToContentSpacing
         height += iconRowHeight
+        // Waveform block == noProfileBottomPadding + otherProfileRowPitch, so selecting a
+        // profile (waveform in, one list row out) is height-neutral while the list is open.
+        height += MenuChrome.noProfileBottomPadding
         if hasProfile {
-            height += MenuChrome.waveformSpacing + MenuChrome.waveformHeight + MenuChrome.waveformBottomPadding
-        } else {
-            height += MenuChrome.noProfileBottomPadding
+            height += otherProfileRowPitch
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
