@@ -404,6 +404,7 @@ final class StatusBarController: NSObject, ObservableObject {
         globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             guard let self, self.isPresented else { return }
             if self.isMouseInStatusItem() { return }
+            if self.isMouseOverMenuChrome() { return }
             self.closeMenu()
         }
 
@@ -437,9 +438,39 @@ final class StatusBarController: NSObject, ObservableObject {
     }
 
     private func isEventInsideMenu(_ event: NSEvent) -> Bool {
-        guard let panel, isPresented else { return false }
-        if event.window === panel { return true }
-        return panel.frame.contains(NSEvent.mouseLocation)
+        guard isPresented else { return false }
+        if let window = event.window, isMenuOwnedWindow(window) {
+            return true
+        }
+        return isMouseOverMenuChrome()
+    }
+
+    /// Panel plus popovers presented from it (color picker). SwiftUI `.popover` is a
+    /// separate window and often hangs past the panel edge — those clicks must not
+    /// count as “outside” or the menu dismisses before the swatch receives the event.
+    private func isMenuOwnedWindow(_ window: NSWindow) -> Bool {
+        if window === panel { return true }
+        if window === statusItem?.button?.window { return false }
+
+        var ancestor: NSWindow? = window
+        while let current = ancestor {
+            if current === panel { return true }
+            ancestor = current.parent
+        }
+
+        // SwiftUI popovers frequently omit a parent link to the presenting panel.
+        let typeName = String(describing: type(of: window))
+        if typeName.localizedCaseInsensitiveContains("popover") { return true }
+        if window.level == .popUpMenu { return true }
+        return false
+    }
+
+    private func isMouseOverMenuChrome() -> Bool {
+        let mouse = NSEvent.mouseLocation
+        if let panel, panel.frame.contains(mouse) { return true }
+        return NSApp.windows.contains { window in
+            window.isVisible && isMenuOwnedWindow(window) && window.frame.contains(mouse)
+        }
     }
 
     private func isMouseInStatusItem() -> Bool {

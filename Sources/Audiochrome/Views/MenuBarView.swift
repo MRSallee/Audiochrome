@@ -111,6 +111,12 @@ struct MenuBarView: View {
                     // Placeholder — hierarchy first; settings UI later.
                 }
 
+                ControlCenterRow(title: "Open Squiglink", style: .command, trailing: .externalLink) {
+                    if let url = URL(string: "https://squig.link/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+
                 ControlCenterRow(title: "Quit", style: .command) {
                     appState.quit()
                 }
@@ -548,12 +554,14 @@ private enum MenuChrome {
     static let sectionTopPadding: CGFloat = 8
     static let sectionToContentSpacing: CGFloat = 6
     static let waveformSpacing: CGFloat = 6
-    static let waveformBottomPadding: CGFloat = 8
-    /// Gap under the “No Profile” row. Chosen so
-    /// `waveformSpacing + waveformHeight + waveformBottomPadding - noProfileBottomPadding`
-    /// equals one Other Profiles row pitch (34 + 2). Selecting/clearing a profile then
-    /// trades the waveform for a list row with no net panel height change.
-    static let noProfileBottomPadding: CGFloat = 6
+    static let waveformBottomPadding: CGFloat = 2
+    /// Reserved under “Change Folder…” when no profile is selected. Equals one Other
+    /// Profiles row pitch so that selecting a profile (waveform in, list row + this
+    /// spacer out) doesn’t change panel height while the list is open.
+    static let noProfileBottomPadding: CGFloat = 36
+    /// Scrim inset from the panel edge — tighter than `contentInset` so the EQ strip
+    /// breaks out past the text/control column.
+    static let waveformHorizontalInset: CGFloat = 6
     static let otherProfilesSectionVerticalPadding: CGFloat = 6
 
     static let headerFontSize: CGFloat = 13
@@ -580,7 +588,8 @@ private enum MenuChrome {
     static let featuredIconSize: CGFloat = 26
     static let listIconSize: CGFloat = 18
     static let chevronSize: CGFloat = 10
-    static let waveformHeight: CGFloat = 28
+    /// Tall enough for 24pt vertical curve inset while keeping ~16pt of plot.
+    static let waveformHeight: CGFloat = 64
 
     static var highlightInset: CGFloat {
         if #available(macOS 26, *) { return 8 }
@@ -620,9 +629,8 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// One Other Profiles row including the spacing beneath it. Selecting a profile removes
-    /// one row from that list and adds a waveform of the same height (see
-    /// `MenuChrome.noProfileBottomPadding`), so the panel doesn’t jump.
+    /// One Other Profiles row including the spacing beneath it. With no profile selected,
+    /// the same pitch is reserved under Change Folder so selecting a profile is height-neutral.
     static var otherProfileRowPitch: CGFloat {
         iconRowHeight + disclosureRowSpacing
     }
@@ -638,13 +646,20 @@ private enum OutputEQPanelMetrics {
         otherProfilesListHeight(count: min(profileCount, maxVisibleOtherProfileRows))
     }
 
-    /// Expanded disclosure body: scrolling profiles + sticky Change Folder.
-    static func otherProfilesExpandedBodyHeight(profileCount: Int) -> CGFloat {
+    /// Expanded disclosure body: scrolling profiles + sticky Change Folder, plus the
+    /// no-profile height reserve under Change Folder when needed.
+    static func otherProfilesExpandedBodyHeight(
+        profileCount: Int,
+        reservesSelectionSpacer: Bool
+    ) -> CGFloat {
         let scroll = otherProfilesScrollHeight(profileCount: profileCount)
-        if scroll <= 0 {
-            return textRowHeight
+        var height: CGFloat = scroll <= 0
+            ? textRowHeight
+            : scroll + disclosureRowSpacing + textRowHeight
+        if reservesSelectionSpacer {
+            height += MenuChrome.noProfileBottomPadding
         }
-        return scroll + disclosureRowSpacing + textRowHeight
+        return height
     }
 
     @MainActor
@@ -669,16 +684,18 @@ private enum OutputEQPanelMetrics {
         height += MenuChrome.sectionRowHeight
         height += MenuChrome.sectionToContentSpacing
         height += iconRowHeight
-        // Waveform block == noProfileBottomPadding + otherProfileRowPitch, so selecting a
-        // profile (waveform in, one list row out) is height-neutral while the list is open.
-        height += MenuChrome.noProfileBottomPadding
         if hasProfile {
-            height += otherProfileRowPitch
+            height += MenuChrome.waveformSpacing
+                + MenuChrome.waveformHeight
+                + MenuChrome.waveformBottomPadding
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // “Other Profiles” header
-        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
+        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(
+            profileCount: otherCount,
+            reservesSelectionSpacer: !hasProfile
+        )
         height += MenuChrome.otherProfilesSectionVerticalPadding
         return height
     }
@@ -790,7 +807,6 @@ private struct OutputEQPanel: View {
                 guard hasProfile else { return }
                 appState.setProfile(forIdentity: identityKey, filename: nil)
             }
-            .padding(.bottom, hasProfile ? 0 : MenuChrome.noProfileBottomPadding)
 
             if hasProfile {
                 ProfileWaveformView(
@@ -798,7 +814,7 @@ private struct OutputEQPanel: View {
                     color: accent
                 )
                 .frame(height: MenuChrome.waveformHeight)
-                .padding(.horizontal, MenuChrome.contentInset)
+                .padding(.horizontal, MenuChrome.waveformHorizontalInset)
                 .padding(.top, MenuChrome.waveformSpacing - MenuChrome.sectionToContentSpacing)
                 .padding(.bottom, MenuChrome.waveformBottomPadding)
             }
@@ -807,8 +823,12 @@ private struct OutputEQPanel: View {
 
     private var otherProfilesSection: some View {
         let profileCount = otherProfiles.count
+        let reservesSelectionSpacer = !hasProfile
         let scrollHeight = OutputEQPanelMetrics.otherProfilesScrollHeight(profileCount: profileCount)
-        let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: profileCount)
+        let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(
+            profileCount: profileCount,
+            reservesSelectionSpacer: reservesSelectionSpacer
+        )
         let needsScroll = profileCount > OutputEQPanelMetrics.maxVisibleOtherProfileRows
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -845,6 +865,9 @@ private struct OutputEQPanel: View {
                 ControlCenterRow(title: "Change Folder…", style: .command) {
                     appState.chooseProfilesFolder(forIdentity: identityKey)
                 }
+                // Height reserve for the waveform trade — under Change Folder so
+                // “No Profile” can sit tight against Other Profiles.
+                .padding(.bottom, reservesSelectionSpacer ? MenuChrome.noProfileBottomPadding : 0)
             }
             .frame(height: otherProfilesProgress * bodyHeight, alignment: .top)
             .clipped()
@@ -886,18 +909,30 @@ private struct ProfileWaveformView: View {
     let magnitudesDB: [Double]?
     let color: Color
 
+    private static let horizontalInset: CGFloat = 6
+    private static let verticalInset: CGFloat = 24
+    private static let strokeWidth: CGFloat = 2
+
     var body: some View {
         Canvas { context, size in
+            let plot = CGRect(
+                x: Self.horizontalInset,
+                y: Self.verticalInset,
+                width: max(0, size.width - Self.horizontalInset * 2),
+                height: max(0, size.height - Self.verticalInset * 2)
+            )
+            let style = StrokeStyle(
+                lineWidth: Self.strokeWidth,
+                lineCap: .round,
+                lineJoin: .round
+            )
+
             guard let magnitudesDB, magnitudesDB.count >= 2 else {
                 var flat = Path()
-                let y = size.height * 0.55
-                flat.move(to: CGPoint(x: 0, y: y))
-                flat.addLine(to: CGPoint(x: size.width, y: y))
-                context.stroke(
-                    flat,
-                    with: .color(color.opacity(0.25)),
-                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-                )
+                let y = plot.midY
+                flat.move(to: CGPoint(x: plot.minX, y: y))
+                flat.addLine(to: CGPoint(x: plot.maxX, y: y))
+                context.stroke(flat, with: .color(Color.primary.opacity(0.35)), style: style)
                 return
             }
 
@@ -915,9 +950,9 @@ private struct ProfileWaveformView: View {
             var path = Path()
             let last = magnitudesDB.count - 1
             for (i, db) in magnitudesDB.enumerated() {
-                let x = size.width * CGFloat(i) / CGFloat(last)
+                let x = plot.minX + plot.width * CGFloat(i) / CGFloat(last)
                 let t = (db - lo) / (hi - lo)
-                let y = size.height * (1 - CGFloat(t))
+                let y = plot.minY + plot.height * (1 - CGFloat(t))
                 if i == 0 {
                     path.move(to: CGPoint(x: x, y: y))
                 } else {
@@ -925,12 +960,20 @@ private struct ProfileWaveformView: View {
                 }
             }
 
-            context.stroke(
-                path,
-                with: .color(color),
-                style: StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round)
-            )
+            context.stroke(path, with: .color(.primary), style: style)
         }
+        .background {
+            RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [color.opacity(0.32), Color.primary.opacity(0.05)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        }
+        // Glass re-blends translucent pixels live; bake so the fade + line stay as authored.
+        .drawingGroup()
         .accessibilityLabel("EQ frequency response")
     }
 }
@@ -941,6 +984,7 @@ private enum ControlCenterTrailing {
     case none
     case chevronRight
     case chevronDown
+    case externalLink
 }
 
 private enum ControlCenterRowStyle {
@@ -1173,6 +1217,9 @@ private struct ControlCenterRow: View {
                         Image(systemName: "chevron.down")
                             .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
                             .foregroundStyle(.tertiary)
+                    case .externalLink:
+                        ExternalLinkIcon()
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, MenuChrome.contentInset)
@@ -1184,5 +1231,46 @@ private struct ControlCenterRow: View {
         .font(titleFont)
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
+    }
+}
+
+/// Matches the provided 17×17 external-link SVG (box + arrow).
+private struct ExternalLinkIcon: View {
+    var body: some View {
+        ExternalLinkShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.chevronSize, height: MenuChrome.chevronSize)
+    }
+}
+
+private struct ExternalLinkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 17
+        let sy = rect.height / 17
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        // Open rounded rect (missing top-right where the arrow sits).
+        path.move(to: pt(8.5, 2.5))
+        path.addLine(to: pt(2.5, 2.5))
+        path.addCurve(to: pt(1.08579, 3.08579), control1: pt(1.96957, 2.5), control2: pt(1.46086, 2.71071))
+        path.addCurve(to: pt(0.5, 4.5), control1: pt(0.710714, 3.46086), control2: pt(0.5, 3.96957))
+        path.addLine(to: pt(0.5, 14.5))
+        path.addCurve(to: pt(1.08579, 15.9142), control1: pt(0.5, 15.0304), control2: pt(0.710714, 15.5391))
+        path.addCurve(to: pt(2.5, 16.5), control1: pt(1.46086, 16.2893), control2: pt(1.96957, 16.5))
+        path.addLine(to: pt(12.5, 16.5))
+        path.addCurve(to: pt(13.9142, 15.9142), control1: pt(13.0304, 16.5), control2: pt(13.5391, 16.2893))
+        path.addCurve(to: pt(14.5, 14.5), control1: pt(14.2893, 15.5391), control2: pt(14.5, 15.0304))
+        path.addLine(to: pt(14.5, 8.5))
+
+        // Arrow diagonal + corner.
+        path.move(to: pt(7.5, 9.5))
+        path.addLine(to: pt(16.5, 0.5))
+        path.move(to: pt(11.5, 0.5))
+        path.addLine(to: pt(16.5, 0.5))
+        path.addLine(to: pt(16.5, 5.5))
+        return path
     }
 }
