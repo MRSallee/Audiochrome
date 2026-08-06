@@ -175,6 +175,23 @@ final class StatusBarController: NSObject, ObservableObject {
         panel.collectionBehavior = [.transient, .fullScreenAuxiliary]
 
         let frame = NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 280)
+
+        // The hosting view keeps a fixed, generous height and is pinned to the top edge,
+        // with the flexible margin at the bottom. Setting its frame per frame instead
+        // makes its layer inherit SwiftUI's animation, and the compositor then presents
+        // it up to 90pt away from where it was put — the menu appears to slide. The
+        // SwiftUI root top-aligns itself inside this box, so nothing has to move.
+        let contentRoot = NSView(frame: frame)
+        contentRoot.autoresizingMask = [.width, .height]
+        hosting.view.frame = NSRect(
+            x: 0,
+            y: frame.height - MenuMetrics.hostingHeight,
+            width: frame.width,
+            height: MenuMetrics.hostingHeight
+        )
+        hosting.view.autoresizingMask = [.width, .minYMargin]
+        contentRoot.addSubview(hosting.view)
+
         if #available(macOS 26.0, *) {
             // Stock Wi‑Fi / Sound use Liquid Glass on macOS 26+.
             let glass = NSGlassEffectView(frame: frame)
@@ -182,7 +199,7 @@ final class StatusBarController: NSObject, ObservableObject {
             glass.style = .regular
             glass.clipsToBounds = true
             glass.autoresizingMask = [.width, .height]
-            glass.contentView = hosting.view
+            glass.contentView = contentRoot
             panel.contentView = glass
         } else {
             let effect = NSVisualEffectView(frame: frame)
@@ -192,9 +209,7 @@ final class StatusBarController: NSObject, ObservableObject {
             effect.clipsToBounds = true
             effect.maskImage = Self.roundedMaskImage(cornerRadius: MenuMetrics.cornerRadius)
             effect.autoresizingMask = [.width, .height]
-            hosting.view.frame = effect.bounds
-            hosting.view.autoresizingMask = [.width, .height]
-            effect.addSubview(hosting.view)
+            effect.addSubview(contentRoot)
             panel.contentView = effect
         }
 
@@ -295,9 +310,10 @@ final class StatusBarController: NSObject, ObservableObject {
         appState.refreshAll()
         appState.restoreEngineIfNeeded()
 
+        // Laying out publishes the content height through the chrome; the root view is
+        // greedy by design, so its fitting size would just be the proposal.
         hosting.view.layoutSubtreeIfNeeded()
-        let height = measuredContentHeight()
-        menuChrome?.noteAppliedHeight(height)
+        let height = menuChrome?.contentHeight ?? MenuMetrics.fallbackHeight
 
         let size = NSSize(width: MenuMetrics.width, height: height)
         let frame = anchoredFrame(for: size, preferredAnchor: pendingAnchorRect)
@@ -334,13 +350,6 @@ final class StatusBarController: NSObject, ObservableObject {
         panel?.alphaValue = 0
         isPresented = false
         setStatusItemHighlighted(false)
-    }
-
-    private func measuredContentHeight() -> CGFloat {
-        guard let hosting = hostingController else { return 280 }
-        let fitted = hosting.sizeThatFits(in: NSSize(width: MenuMetrics.width, height: 10_000))
-        let fitting = hosting.view.fittingSize.height
-        return max(120, ceil(max(fitted.height, fitting)))
     }
 
     private func anchoredFrame(for size: NSSize, preferredAnchor: NSRect?) -> NSRect {
@@ -530,6 +539,11 @@ private enum MenuMetrics {
     /// Control Center / Wi‑Fi panels use 16; default windows use 10.
     static let cornerRadius: CGFloat = 16
     static let minMeasuredHeight: CGFloat = 80
+    /// Only used before SwiftUI has ever reported a height.
+    static let fallbackHeight: CGFloat = 280
+    /// Fixed hosting-view height: tall enough for any menu, so the view never needs
+    /// resizing while the panel animates. Overflow is clipped by the panel.
+    static let hostingHeight: CGFloat = 1600
     static let screenMargin: CGFloat = 8
     /// Gap between menu-bar bottom and panel top (matches system extras).
     static let menuBarGap: CGFloat = 5
@@ -543,8 +557,8 @@ final class PopoverChrome: ObservableObject {
 
     private weak var panel: StatusMenuPanel?
     private var panelIsShowing: () -> Bool = { false }
-    private(set) var isDisclosureAnimating = false
     private var measuredHeight: CGFloat = 0
+    private var expectsAnimatedHeight = false
 
     func attach(_ panel: StatusMenuPanel) {
         self.panel = panel
@@ -557,81 +571,79 @@ final class PopoverChrome: ObservableObject {
         presentationID += 1
     }
 
+    /// Runs `changes` in the disclosure animation. The panel is resized by a single
+    /// Core Animation window animation rather than a new frame every tick: the window
+    /// server interpolates that smoothly, while per-frame `setFrame` calls get composited
+    /// a frame or two late and leave the panel edges jittering.
+    func animatingDisclosure(_ changes: () -> Void) {
+        expectsAnimatedHeight = true
+        withAnimation(.easeInOut(duration: Self.disclosureDuration)) {
+            changes()
+        }
+        // Nothing to animate to if the layout height did not actually change.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.disclosureDuration + 0.1))
+            self?.expectsAnimatedHeight = false
+        }
+    }
+
+    /// SwiftUI publishes its laid-out height once per change, at the start of the
+    /// animation, so this is where the matching window animation is kicked off.
     func reportMeasuredHeight(_ height: CGFloat) {
         let h = ceil(height)
         guard h >= MenuMetrics.minMeasuredHeight else { return }
         measuredHeight = h
-        guard !isDisclosureAnimating else { return }
         guard panelIsShowing() else { return }
-        applyHeight(h, animated: false)
+
+        if expectsAnimatedHeight {
+            expectsAnimatedHeight = false
+            animateHeight(to: h)
+        } else {
+            applyHeight(h)
+        }
     }
 
     func syncToMeasuredHeight() {
         guard measuredHeight >= MenuMetrics.minMeasuredHeight else { return }
-        applyHeight(measuredHeight, animated: false)
+        applyHeight(measuredHeight)
     }
 
-    func noteAppliedHeight(_ height: CGFloat) {
-        measuredHeight = max(MenuMetrics.minMeasuredHeight, ceil(height))
+    /// Content height as SwiftUI last laid it out. The root view is deliberately greedy
+    /// so it top-aligns in the fixed hosting view, which makes `sizeThatFits` useless.
+    var contentHeight: CGFloat? {
+        measuredHeight >= MenuMetrics.minMeasuredHeight ? measuredHeight : nil
     }
 
-    /// Animates the panel frame via AppKit’s animator (compositor-driven).
-    /// Pair with `withAnimation(.easeInOut(duration: disclosureDuration))` on content progress
-    /// so list height and window height share the same curve without a CPU tick loop.
-    func animateDisclosure(deltaHeight: CGFloat) {
-        guard let panel, abs(deltaHeight) > 0.5 else { return }
-
-        isDisclosureAnimating = true
-
-        var frame = panel.frame
-        let newHeight = max(1, frame.height + deltaHeight)
-        frame.origin.y += frame.height - newHeight
-        frame.size.height = newHeight
-        frame.size.width = MenuMetrics.width
-
-        let hadShadow = panel.hasShadow
-        if hadShadow {
-            panel.hasShadow = false
-        }
-
-        NSAnimationContext.runAnimationGroup({ context in
+    /// Hands the whole resize to Core Animation in one go, on the same curve and duration
+    /// the SwiftUI content is using, so the two stay in step without a per-frame driver.
+    private func animateHeight(to height: CGFloat) {
+        guard let panel, let frame = targetFrame(for: height) else { return }
+        NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.disclosureDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
-        }, completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                if hadShadow {
-                    self.panel?.hasShadow = true
-                    self.panel?.invalidateShadow()
-                }
-                self.isDisclosureAnimating = false
-                self.syncToMeasuredHeight()
-            }
-        })
+        }
     }
 
-    private func applyHeight(_ height: CGFloat, animated: Bool) {
-        guard let panel else { return }
+    private func applyHeight(_ height: CGFloat) {
+        guard let panel, let frame = targetFrame(for: height) else { return }
+        panel.setFrame(frame, display: true)
+    }
+
+    /// The panel grows downward from the status item, so the top edge is the fixed point.
+    private func targetFrame(for height: CGFloat) -> NSRect? {
+        guard let panel else { return nil }
         let newHeight = max(1, height)
         var frame = panel.frame
         guard abs(frame.height - newHeight) > 0.25 || abs(frame.width - MenuMetrics.width) > 0.25 else {
-            return
+            return nil
         }
         frame.origin.y += frame.height - newHeight
         frame.size.height = newHeight
         frame.size.width = MenuMetrics.width
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = Self.disclosureDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(frame, display: true)
-            }
-        } else {
-            panel.setFrame(frame, display: true)
-        }
+        return frame
     }
+
 }
 
 private struct ViewHeightKey: PreferenceKey {
@@ -660,5 +672,9 @@ private struct MenuBarRoot: View {
             .onPreferenceChange(ViewHeightKey.self) { height in
                 chrome.reportMeasuredHeight(height)
             }
+            // Top-align within the fixed-height hosting view. This makes the root greedy,
+            // so the panel's height comes from the measurement above, never from asking
+            // the hosting controller what size it wants.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

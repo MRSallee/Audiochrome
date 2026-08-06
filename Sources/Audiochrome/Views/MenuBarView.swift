@@ -302,10 +302,7 @@ struct MenuBarView: View {
                 identityKey: identityKey,
                 otherProfilesProgress: otherProfilesProgress,
                 colorPickerIdentityKey: $colorPickerIdentityKey,
-                showsLeadingDivider: showsLeadingDivider,
-                onToggleOtherProfiles: { delta in
-                    popoverChrome.animateDisclosure(deltaHeight: delta * progress)
-                }
+                showsLeadingDivider: showsLeadingDivider
             )
         }
         .frame(height: progress * height, alignment: .top)
@@ -335,7 +332,6 @@ struct MenuBarView: View {
     private var otherDevicesDisclosure: some View {
         let count = unlistedDevices.count
         let scrollHeight = UnlistedDevicesMetrics.scrollHeight(count: count)
-        let bodyHeight = UnlistedDevicesMetrics.bodyHeight(count: count)
         let needsScroll = count > UnlistedDevicesMetrics.maxVisibleRows
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -344,11 +340,8 @@ struct MenuBarView: View {
                 style: .disclosure,
                 trailing: otherDevicesListProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
-                let expanding = otherDevicesListProgress < 0.5
-                let target: CGFloat = expanding ? 1 : 0
-                let delta = (target - otherDevicesListProgress) * bodyHeight
-                popoverChrome.animateDisclosure(deltaHeight: delta)
-                withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+                let target: CGFloat = otherDevicesListProgress < 0.5 ? 1 : 0
+                popoverChrome.animatingDisclosure {
                     otherDevicesListProgress = target
                 }
             }
@@ -373,12 +366,8 @@ struct MenuBarView: View {
     }
 
     private func selectUnlistedDevice(_ device: AudioOutputDevice) {
-        let collapseHeight =
-            otherDevicesListProgress * UnlistedDevicesMetrics.bodyHeight(count: unlistedDevices.count)
-
         if otherDevicesListProgress > 0.01 {
-            popoverChrome.animateDisclosure(deltaHeight: -collapseHeight)
-            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+            popoverChrome.animatingDisclosure {
                 otherDevicesListProgress = 0
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
@@ -422,36 +411,10 @@ struct MenuBarView: View {
 
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
-        let activeKey = activeDevice?.identityKey
-        let oldActive = activeKey.map {
-            OutputEQPanelMetrics.height(
-                appState: appState,
-                identityKey: $0,
-                otherProfilesProgress: activeOtherProfilesProgress,
-                showsLeadingDivider: true
-            ) * activePanelProgress
-        } ?? 0
-        let oldOther: CGFloat = {
-            guard let existing = expandedOtherDeviceKey else { return 0 }
-            return OutputEQPanelMetrics.height(
-                appState: appState,
-                identityKey: existing,
-                otherProfilesProgress: inactiveOtherProfilesProgress,
-                showsLeadingDivider: true
-            ) * otherDevicePanelProgress
-        }()
         let preferredOtherProfiles = preferredOtherProfilesProgress(for: key)
-        let newOther = OutputEQPanelMetrics.height(
-            appState: appState,
-            identityKey: key,
-            otherProfilesProgress: preferredOtherProfiles,
-            showsLeadingDivider: true
-        )
-        let delta = newOther - oldActive - oldOther
 
         if animated {
-            popoverChrome.animateDisclosure(deltaHeight: delta)
-            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+            popoverChrome.animatingDisclosure {
                 activePanelProgress = 0
                 activeOtherProfilesProgress = 0
                 expandedOtherDeviceKey = key
@@ -474,36 +437,9 @@ struct MenuBarView: View {
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
         let preferredOtherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
-        let oldOther: CGFloat = {
-            guard let existing = expandedOtherDeviceKey else { return 0 }
-            return OutputEQPanelMetrics.height(
-                appState: appState,
-                identityKey: existing,
-                otherProfilesProgress: inactiveOtherProfilesProgress,
-                showsLeadingDivider: true
-            ) * otherDevicePanelProgress
-        }()
-        let newActive = activeKey.map {
-            OutputEQPanelMetrics.height(
-                appState: appState,
-                identityKey: $0,
-                otherProfilesProgress: preferredOtherProfiles,
-                showsLeadingDivider: true
-            )
-        } ?? 0
-        let oldActive = activeKey.map {
-            OutputEQPanelMetrics.height(
-                appState: appState,
-                identityKey: $0,
-                otherProfilesProgress: activeOtherProfilesProgress,
-                showsLeadingDivider: true
-            ) * activePanelProgress
-        } ?? 0
-        let delta = newActive - oldActive - oldOther
 
         if animated {
-            popoverChrome.animateDisclosure(deltaHeight: delta)
-            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+            popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
                 activeOtherProfilesProgress = preferredOtherProfiles
                 otherDevicePanelProgress = 0
@@ -738,11 +674,11 @@ private enum OutputEQPanelMetrics {
 
 private struct OutputEQPanel: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var popoverChrome: PopoverChrome
     let identityKey: String
     @Binding var otherProfilesProgress: CGFloat
     @Binding var colorPickerIdentityKey: String?
     var showsLeadingDivider: Bool = true
-    var onToggleOtherProfiles: (CGFloat) -> Void
 
     private var mapping: OutputMapping {
         appState.config.mapping(forIdentity: identityKey)
@@ -803,68 +739,22 @@ private struct OutputEQPanel: View {
         .onAppear {
             expandOtherProfilesWhenNoProfile(animated: false)
         }
-        .onChange(of: mapping.profileFilename) { oldFilename, filename in
+        .onChange(of: mapping.profileFilename) { _, filename in
             if filename == nil {
-                if otherProfilesProgress < 0.5 {
-                    expandOtherProfilesWhenNoProfile(animated: true)
-                } else {
-                    // List already open — still need to animate waveform out / row back in.
-                    animateProfilePresenceHeightChange(fromNoProfile: false)
-                }
-            } else if oldFilename == nil {
-                // No Profile → selection: waveform in, one other-profile row out.
-                animateProfilePresenceHeightChange(fromNoProfile: true)
+                expandOtherProfilesWhenNoProfile(animated: true)
             }
         }
     }
 
     private func expandOtherProfilesWhenNoProfile(animated: Bool) {
         guard mapping.profileFilename == nil, otherProfilesProgress < 0.5 else { return }
-        let listHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: otherProfiles.count)
-        let delta = (1 - otherProfilesProgress) * listHeight
         if animated {
-            onToggleOtherProfiles(delta)
-            withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+            popoverChrome.animatingDisclosure {
                 otherProfilesProgress = 1
             }
         } else {
             otherProfilesProgress = 1
         }
-    }
-
-    /// Keep panel height in sync when Active Profile appears/disappears while Other Profiles stays expanded.
-    private func animateProfilePresenceHeightChange(fromNoProfile: Bool) {
-        let afterOtherCount = otherProfiles.count
-        let beforeOtherCount = fromNoProfile ? afterOtherCount + 1 : max(0, afterOtherCount - 1)
-        let beforeHasProfile = !fromNoProfile
-        let afterHasProfile = fromNoProfile
-
-        let progress = otherProfilesProgress
-        let activeDelta =
-            Self.activeProfileBlockHeight(hasProfile: afterHasProfile)
-            - Self.activeProfileBlockHeight(hasProfile: beforeHasProfile)
-        let otherDelta = progress * (
-            OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: afterOtherCount)
-            - OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: beforeOtherCount)
-        )
-        let delta = activeDelta + otherDelta
-        guard abs(delta) > 0.5 else { return }
-        onToggleOtherProfiles(delta)
-    }
-
-    private static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
-        // Must match OutputEQPanelMetrics / activeProfileSection layout.
-        var height: CGFloat =
-            MenuChrome.sectionTopPadding
-            + MenuChrome.sectionRowHeight
-            + MenuChrome.sectionToContentSpacing
-            + MenuChrome.iconRowHeight
-        if hasProfile {
-            height += MenuChrome.waveformSpacing + MenuChrome.waveformHeight + MenuChrome.waveformBottomPadding
-        } else {
-            height += MenuChrome.noProfileBottomPadding
-        }
-        return height
     }
 
     private var activeProfileSection: some View {
@@ -915,11 +805,8 @@ private struct OutputEQPanel: View {
                 style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
-                let expanding = otherProfilesProgress < 0.5
-                let target: CGFloat = expanding ? 1 : 0
-                let delta = (target - otherProfilesProgress) * bodyHeight
-                onToggleOtherProfiles(delta)
-                withAnimation(.easeInOut(duration: PopoverChrome.disclosureDuration)) {
+                let target: CGFloat = otherProfilesProgress < 0.5 ? 1 : 0
+                popoverChrome.animatingDisclosure {
                     otherProfilesProgress = target
                 }
             }
