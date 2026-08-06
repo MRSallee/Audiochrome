@@ -20,6 +20,7 @@ struct AudiochromeBrandLockup: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
         }
+        .opacity(0.5)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Audiochrome Premium")
     }

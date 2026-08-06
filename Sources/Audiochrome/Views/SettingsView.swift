@@ -85,6 +85,13 @@ struct SettingsView: View {
             if AppConfig.showEQAccuracyDebugSettings {
                 debugSettingsSection
             }
+
+            Text(Self.versionLabel)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .opacity(0.5)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
         }
         .padding(20)
         .frame(width: 420)
@@ -94,6 +101,12 @@ struct SettingsView: View {
                 appState.refreshEngineDiagnostics()
             }
         }
+    }
+
+    private static var versionLabel: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let trimmed = short?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "v—" : "v\(trimmed)"
     }
 
     @ViewBuilder
