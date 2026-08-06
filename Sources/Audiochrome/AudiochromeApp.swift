@@ -19,6 +19,7 @@ struct AudiochromeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appState: AppState?
     private var statusBar: StatusBarController?
+    private var settingsWindow: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -27,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState = state
         EQStatusNotifier.shared.configure()
         statusBar = StatusBarController(appState: state)
+        state.onOpenSettings = { [weak self] in
+            self?.statusBar?.dismissMenu()
+            self?.showSettings()
+        }
 
         // Process taps / AudioDeviceStart are unreliable before the app has activated.
         // Menu-bar click worked because it activated first; mirror that at launch.
@@ -36,8 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func showSettings() {
+        guard let appState else { return }
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(appState: appState)
+        }
+        settingsWindow?.showSettings()
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
-        appState?.restoreEngineIfNeeded()
+        appState?.handleApplicationDidBecomeActive()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

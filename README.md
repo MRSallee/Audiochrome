@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v0.6** — Shared output headers with rename, EQ status notifications, launch-time profile folder access, animated EQ blob, and packaging/codesign fixes for notifications.  
+> **v0.9.0** — Custom status-item panel, optional Custom EQ per device (shared “All Audio” when off), Quit & Relaunch for privacy grants, and settings/login-item support.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

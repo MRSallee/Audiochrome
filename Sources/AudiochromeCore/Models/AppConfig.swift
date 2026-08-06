@@ -84,24 +84,41 @@ public struct KnownOutput: Codable, Equatable, Sendable, Identifiable {
 }
 
 public struct AppConfig: Codable, Equatable, Sendable {
+    /// Shared EQ slot when `customEQPerDevice` is off.
+    public static let allAudioIdentityKey = "virtual:all-audio"
+    public static let allAudioDefaultName = "All Audio"
+
     /// EQ mappings keyed by identityKey.
     public var outputs: [String: OutputMapping]
     /// Remembered destinations keyed by identityKey.
     public var knownOutputs: [String: KnownOutput]
     /// Colors keyed by profile filename — color belongs to the profile, not the output.
     public var profileColors: [String: String]
+    /// Launch Audiochrome when the user logs in. Mirrored to `SMAppService`.
     public var openAtLogin: Bool
+    /// Post a banner when EQ is engaged on launch / output change.
+    public var activeEQReminders: Bool
+    /// Allow a distinct EQ profile (and folder) per output device.
+    public var customEQPerDevice: Bool
+    /// Animate the status-item blob with audio level while EQ is engaged.
+    public var animatedMenuBarIcon: Bool
 
     public init(
         outputs: [String: OutputMapping] = [:],
         knownOutputs: [String: KnownOutput] = [:],
         profileColors: [String: String] = [:],
-        openAtLogin: Bool = false
+        openAtLogin: Bool = false,
+        activeEQReminders: Bool = true,
+        customEQPerDevice: Bool = true,
+        animatedMenuBarIcon: Bool = true
     ) {
         self.outputs = outputs
         self.knownOutputs = knownOutputs
         self.profileColors = profileColors
         self.openAtLogin = openAtLogin
+        self.activeEQReminders = activeEQReminders
+        self.customEQPerDevice = customEQPerDevice
+        self.animatedMenuBarIcon = animatedMenuBarIcon
     }
 
     public init(from decoder: Decoder) throws {
@@ -110,6 +127,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
         knownOutputs = try container.decodeIfPresent([String: KnownOutput].self, forKey: .knownOutputs) ?? [:]
         profileColors = try container.decodeIfPresent([String: String].self, forKey: .profileColors) ?? [:]
         openAtLogin = try container.decodeIfPresent(Bool.self, forKey: .openAtLogin) ?? false
+        activeEQReminders = try container.decodeIfPresent(Bool.self, forKey: .activeEQReminders) ?? true
+        customEQPerDevice = try container.decodeIfPresent(Bool.self, forKey: .customEQPerDevice) ?? true
+        animatedMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatedMenuBarIcon) ?? true
 
         // Migrate legacy entries that used raw UID as the only key / lacked identityKey.
         var migratedKnown: [String: KnownOutput] = [:]
@@ -297,15 +317,28 @@ public struct AudioOutputDevice: Identifiable, Equatable, Sendable {
         isAvailable: Bool = true,
         transport: String? = nil,
         displayName: String? = nil,
-        needsFriendlyName: Bool = false
+        needsFriendlyName: Bool = false,
+        identityKeyOverride: String? = nil
     ) {
         self.uid = uid
-        self.identityKey = DeviceIdentity.key(uid: uid, transport: transport)
+        self.identityKey = identityKeyOverride ?? DeviceIdentity.key(uid: uid, transport: transport)
         self.name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? name
         self.isDefault = isDefault
         self.isAvailable = isAvailable
         self.transport = transport
         self.needsFriendlyName = needsFriendlyName
+    }
+
+    /// Synthetic row used when Custom EQ per device is off.
+    public static func allAudio(displayName: String) -> AudioOutputDevice {
+        AudioOutputDevice(
+            uid: AppConfig.allAudioIdentityKey,
+            name: AppConfig.allAudioDefaultName,
+            isDefault: true,
+            isAvailable: true,
+            displayName: displayName,
+            identityKeyOverride: AppConfig.allAudioIdentityKey
+        )
     }
 }
 

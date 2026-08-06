@@ -90,6 +90,32 @@ public struct EQProfile: Equatable, Sendable {
     public var effectiveRight: ChannelEQ {
         right ?? linked ?? left ?? ChannelEQ()
     }
+
+    /// Largest |gain| among enabled filters (used for waveform vertical scale).
+    public var maxAbsFilterGainDB: Double {
+        let channels = [linked, left, right].compactMap { $0 }
+        return channels
+            .flatMap(\.filters)
+            .filter(\.enabled)
+            .map { abs($0.gainDB) }
+            .max() ?? 0
+    }
+
+    /// Waveform half-range in dB: ±10 by default, or ±max filter gain when larger.
+    public var waveformHalfRangeDB: Double {
+        max(10, maxAbsFilterGainDB)
+    }
+}
+
+/// Menu EQ curve preview: samples plus vertical scale (±halfRangeDB).
+public struct EQFrequencyResponsePreview: Equatable, Sendable {
+    public var magnitudesDB: [Double]
+    public var halfRangeDB: Double
+
+    public init(magnitudesDB: [Double], halfRangeDB: Double) {
+        self.magnitudesDB = magnitudesDB
+        self.halfRangeDB = halfRangeDB
+    }
 }
 
 public struct ProfileFile: Identifiable, Equatable, Sendable {

@@ -16,8 +16,6 @@ final class StatusBarController: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var appearanceObservation: NSKeyValueObservation?
     private var animationTimer: Timer?
-    private var animPhase: CGFloat = 0
-    private var displayedLevel: CGFloat = 0
     private var globalDismissMonitor: Any?
     private var localDismissMonitor: Any?
     private var statusItemClickMonitor: Any?
@@ -176,11 +174,9 @@ final class StatusBarController: NSObject, ObservableObject {
 
         let frame = NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 280)
 
-        // The hosting view keeps a fixed, generous height and is pinned to the top edge,
-        // with the flexible margin at the bottom. Setting its frame per frame instead
-        // makes its layer inherit SwiftUI's animation, and the compositor then presents
-        // it up to 90pt away from where it was put — the menu appears to slide. The
-        // SwiftUI root top-aligns itself inside this box, so nothing has to move.
+        // Fixed tall hosting view, top-pinned via autoresizing. Never set its frame
+        // while the panel animates — that fights Core Animation and makes the menu slide.
+        // SwiftUI content top-aligns inside this box; the panel clips the rest.
         let contentRoot = NSView(frame: frame)
         contentRoot.autoresizingMask = [.width, .height]
         hosting.view.frame = NSRect(
@@ -216,7 +212,10 @@ final class StatusBarController: NSObject, ObservableObject {
         panel.alphaValue = 0
         panel.orderOut(nil)
         self.panel = panel
-        chrome.attach(panel)
+        chrome.attach(panel) { [weak self] size in
+            self?.anchoredFrame(for: size, preferredAnchor: nil)
+                ?? NSRect(x: 0, y: 0, width: size.width, height: size.height)
+        }
     }
 
     /// Stretchable rounded-rect mask for NSVisualEffectView (pre–macOS 26 fallback).
@@ -241,9 +240,10 @@ final class StatusBarController: NSObject, ObservableObject {
     // MARK: - Icon
 
     private func syncAnimationTimer() {
-        if appState.isEQEngaged {
+        let shouldAnimate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
+        if shouldAnimate {
             guard animationTimer == nil else { return }
-            let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1.0 / EQBlob.animationFrameRate, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     self?.tickAnimation()
                 }
@@ -253,34 +253,31 @@ final class StatusBarController: NSObject, ObservableObject {
         } else {
             animationTimer?.invalidate()
             animationTimer = nil
-            displayedLevel = 0
-            animPhase = 0
+            EQBlobMotion.shared.reset()
         }
     }
 
     private func tickAnimation() {
-        guard appState.isEQEngaged else {
+        guard appState.isEQEngaged, appState.config.animatedMenuBarIcon else {
             syncAnimationTimer()
             refreshIcon()
             return
         }
-        let raw = CGFloat(appState.audioEngine.outputLevel)
-        displayedLevel += (raw - displayedLevel) * 0.35
-        if displayedLevel < 0.01 { displayedLevel = 0 }
-        animPhase += 0.12 + displayedLevel * 0.55
+        EQBlobMotion.shared.tick(rawLevel: CGFloat(appState.audioEngine.outputLevel))
         refreshIcon()
     }
 
     func refreshIcon() {
         let button = statusItem?.button
         let appearance = menuBarAppearance(for: button)
-        let level = appState.isEQEngaged ? displayedLevel : 0
+        let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
+        let motion = EQBlobMotion.shared
         button?.image = StatusIconImage.make(
             color: nsColor(from: appState.activeProfileColor),
             isEngaged: appState.isEQEngaged,
             appearance: appearance,
-            level: level,
-            phase: animPhase
+            level: animate ? motion.level : 0,
+            phase: animate ? motion.phase : 0
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
         if isPresented {
@@ -309,6 +306,9 @@ final class StatusBarController: NSObject, ObservableObject {
 
         appState.refreshAll()
         appState.restoreEngineIfNeeded()
+        // Menu open is often the first chance to notice a Settings grant (accessory apps
+        // don’t always get a clean didBecomeActive when returning from System Settings).
+        appState.retryAudioEngine()
 
         // Laying out publishes the content height through the chrome; the root view is
         // greedy by design, so its fitting size would just be the proposal.
@@ -341,6 +341,11 @@ final class StatusBarController: NSObject, ObservableObject {
             }
             self.setStatusItemHighlighted(true)
         }
+    }
+
+    /// Public so Settings (and similar) can dismiss the menu without going through a modal hook.
+    func dismissMenu() {
+        closeMenu()
     }
 
     private func closeMenu() {
@@ -462,6 +467,8 @@ final class StatusBarController: NSObject, ObservableObject {
         let typeName = String(describing: type(of: window))
         if typeName.localizedCaseInsensitiveContains("popover") { return true }
         if window.level == .popUpMenu { return true }
+        // Modeless Settings (and similar) — keep the menu up while using them.
+        if window.title == "Audiochrome Settings" { return true }
         return false
     }
 
@@ -515,26 +522,22 @@ enum StatusIconImage {
         let inset: CGFloat = 1.0
         let drawRect = NSRect(origin: .zero, size: sizeValue).insetBy(dx: inset, dy: inset)
         let center = CGPoint(x: drawRect.midX, y: drawRect.midY)
-        let radius = min(drawRect.width, drawRect.height) / 2 * 0.92
+        // Leave room for ring stroke so the animated edge isn’t clipped.
+        let radius = min(drawRect.width, drawRect.height) / 2 * 0.78
 
         let darkBar = isDark(appearance ?? NSApp.effectiveAppearance)
         let paint: NSColor = isEngaged
             ? contrastAdjusted(color, againstDarkBackground: darkBar)
             : .black
 
-        let blob = EQBlob.bezierPath(center: center, radius: radius, level: level, phase: phase)
-
-        if isEngaged {
-            let halo = darkBar
-                ? NSColor.white.withAlphaComponent(0.50)
-                : NSColor.black.withAlphaComponent(0.50)
-            halo.set()
-            blob.lineWidth = 2.6
-            blob.stroke()
-        }
+        let ring = EQBlob.bezierPath(center: center, radius: radius, level: level, phase: phase)
+        let ringWidth = EQBlob.ringLineWidth(outerRadius: radius)
+        let inner = NSBezierPath(ovalIn: EQBlob.innerCircleRect(center: center, outerRadius: radius))
 
         paint.set()
-        blob.fill()
+        inner.fill()
+        ring.lineWidth = ringWidth
+        ring.stroke()
 
         image.unlockFocus()
         image.isTemplate = !isEngaged
@@ -588,11 +591,13 @@ final class PopoverChrome: ObservableObject {
 
     private weak var panel: StatusMenuPanel?
     private var panelIsShowing: () -> Bool = { false }
+    private var anchoredFrame: ((NSSize) -> NSRect)?
     private var measuredHeight: CGFloat = 0
     private var expectsAnimatedHeight = false
 
-    func attach(_ panel: StatusMenuPanel) {
+    func attach(_ panel: StatusMenuPanel, anchoredFrame: @escaping (NSSize) -> NSRect) {
         self.panel = panel
+        self.anchoredFrame = anchoredFrame
         self.panelIsShowing = { [weak panel] in
             (panel?.alphaValue ?? 0) > 0.5 && (panel?.isVisible == true)
         }
@@ -648,21 +653,33 @@ final class PopoverChrome: ObservableObject {
     /// Hands the whole resize to Core Animation in one go, on the same curve and duration
     /// the SwiftUI content is using, so the two stay in step without a per-frame driver.
     private func animateHeight(to height: CGFloat) {
-        guard let panel, let frame = targetFrame(for: height) else { return }
+        guard let panel, let frame = topPinnedFrame(for: height) else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.disclosureDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(frame, display: true)
+        } completionHandler: { [weak panel] in
+            Task { @MainActor in
+                panel?.invalidateShadow()
+            }
         }
     }
 
+    /// Instant / structural resizes re-pin under the status item so a drifted top edge
+    /// can’t accumulate (e.g. menu open while Settings flips Custom EQ per device).
     private func applyHeight(_ height: CGFloat) {
-        guard let panel, let frame = targetFrame(for: height) else { return }
+        guard let panel else { return }
+        let size = NSSize(width: MenuMetrics.width, height: max(1, height))
+        guard abs(panel.frame.height - size.height) > 0.25
+            || abs(panel.frame.width - size.width) > 0.25
+        else { return }
+        let frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
         panel.setFrame(frame, display: true)
+        panel.invalidateShadow()
     }
 
-    /// The panel grows downward from the status item, so the top edge is the fixed point.
-    private func targetFrame(for height: CGFloat) -> NSRect? {
+    /// Grow/shrink downward from the current top edge (disclosure animation).
+    private func topPinnedFrame(for height: CGFloat) -> NSRect? {
         guard let panel else { return nil }
         let newHeight = max(1, height)
         var frame = panel.frame
@@ -702,6 +719,13 @@ private struct MenuBarRoot: View {
             )
             .onPreferenceChange(ViewHeightKey.self) { height in
                 chrome.reportMeasuredHeight(height)
+            }
+            // Permission banner can appear while a system sheet is up; re-sync after layout
+            // settles so the panel grows instead of clipping.
+            .onChange(of: appState.needsAudioPermission) { _, _ in
+                DispatchQueue.main.async {
+                    chrome.syncToMeasuredHeight()
+                }
             }
             // Top-align within the fixed-height hosting view. This makes the root greedy,
             // so the panel's height comes from the measurement above, never from asking

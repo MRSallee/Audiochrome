@@ -28,15 +28,18 @@ struct MenuBarView: View {
     @State private var colorPickerIdentityKey: String?
     @State private var renamingIdentityKey: String?
     @State private var renameText = ""
-    @State private var hoveringRenameKey: String?
 
     private var activeDevice: AudioOutputDevice? {
-        appState.devices.first(where: \.isDefault)
+        if !appState.config.customEQPerDevice {
+            return appState.allAudioDevice
+        }
+        return appState.devices.first(where: \.isDefault)
             ?? appState.devices.first
     }
 
     private var otherDevices: [AudioOutputDevice] {
-        appState.devices.filter { device in
+        guard appState.config.customEQPerDevice else { return [] }
+        return appState.devices.filter { device in
             guard !device.isDefault else { return false }
             return appState.shouldListInactiveOutput(device.identityKey)
                 || pinnedOtherDeviceKeys.contains(device.identityKey)
@@ -44,6 +47,7 @@ struct MenuBarView: View {
     }
 
     /// Connected outputs with no EQ mapping yet — reachable via “Other Devices”.
+    /// Same membership in both modes (non-default, not already shown as an EQ row).
     private var unlistedDevices: [AudioOutputDevice] {
         appState.devices.filter { device in
             guard !device.isDefault else { return false }
@@ -54,8 +58,7 @@ struct MenuBarView: View {
     }
 
     private var activeMapping: OutputMapping {
-        guard let key = activeDevice?.identityKey else { return OutputMapping() }
-        return appState.config.mapping(forIdentity: key)
+        appState.activeMapping ?? OutputMapping()
     }
 
     private var activeAccent: Color {
@@ -83,47 +86,52 @@ struct MenuBarView: View {
                 )
             }
 
-            if !otherDevices.isEmpty {
-                Divider().padding(.horizontal, MenuChrome.dividerInset)
-            }
-
-            ForEach(otherDevices, id: \.identityKey) { device in
-                otherDeviceSection(device)
-                if device.identityKey != otherDevices.last?.identityKey {
+            Group {
+                if !otherDevices.isEmpty {
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
                 }
-            }
 
-            if !unlistedDevices.isEmpty {
-                Divider().padding(.horizontal, MenuChrome.dividerInset)
-                otherDevicesDisclosure
-            }
-
-            if appState.needsAudioPermission {
-                Divider().padding(.horizontal, MenuChrome.dividerInset)
-                permissionBanner
-            }
-
-            Divider().padding(.horizontal, MenuChrome.dividerInset)
-
-            VStack(alignment: .leading, spacing: 0) {
-                ControlCenterRow(title: "Settings…", style: .command) {
-                    // Placeholder — hierarchy first; settings UI later.
-                }
-
-                ControlCenterRow(title: "Open Squiglink", style: .command, trailing: .externalLink) {
-                    if let url = URL(string: "https://squig.link/") {
-                        NSWorkspace.shared.open(url)
+                ForEach(otherDevices, id: \.identityKey) { device in
+                    otherDeviceSection(device)
+                    if device.identityKey != otherDevices.last?.identityKey {
+                        Divider().padding(.horizontal, MenuChrome.dividerInset)
                     }
                 }
 
-                ControlCenterRow(title: "Quit", style: .command) {
-                    appState.quit()
+                if !unlistedDevices.isEmpty {
+                    Divider().padding(.horizontal, MenuChrome.dividerInset)
+                    otherDevicesDisclosure
+                }
+
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
+
+                VStack(alignment: .leading, spacing: 0) {
+                    ControlCenterRow(title: "Settings…", style: .command) {
+                        appState.openSettings()
+                    }
+
+                    ControlCenterRow(title: "Open Squiglink", style: .command, trailing: .externalLink) {
+                        if let url = URL(string: "https://squig.link/") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
+            }
+            .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+            .disabled(appState.needsAudioPermission)
+
+            ControlCenterRow(title: "Quit", style: .command) {
+                appState.quit()
+            }
+
+            if appState.needsAudioPermission {
+                ControlCenterRow(title: "Quit & Relaunch", style: .command) {
+                    appState.quitAndRelaunch()
                 }
             }
-            .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
-            .padding(.bottom, MenuChrome.menuPadding)
         }
+        .padding(.bottom, MenuChrome.menuPadding)
         .frame(maxWidth: .infinity, alignment: .top)
         .focusEffectDisabled()
         .onAppear {
@@ -199,20 +207,37 @@ struct MenuBarView: View {
         onToggleExpand: @escaping () -> Void
     ) -> some View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
-        return HStack(spacing: 10) {
-            outputTitle(device, isFocused: isFocused)
+        let isRenaming = renamingIdentityKey == device.identityKey && isFocused
 
-            // Empty header area expands/collapses (and dismisses a sticky rename).
-            Color.clear
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: MenuChrome.textRowContentHeight)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onToggleExpand)
+        return HStack(spacing: 10) {
+            // One hit target: name + trailing space up to the toggle.
+            // While renaming, the text field owns that region instead.
+            if isRenaming {
+                outputTitle(device, isFocused: isFocused)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Button(action: onToggleExpand) {
+                    HStack(spacing: 0) {
+                        outputTitle(device, isFocused: isFocused)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: MenuChrome.textRowContentHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
 
             Toggle(
                 "",
                 isOn: Binding(
-                    get: { mapping.enabled },
+                    get: {
+                        // Armed in config isn’t “on” if EQ can’t run (e.g. no audio permission).
+                        if device.isDefault, appState.needsAudioPermission {
+                            return false
+                        }
+                        return mapping.enabled
+                    },
                     set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
                 )
             )
@@ -226,13 +251,28 @@ struct MenuBarView: View {
         .padding(.horizontal, MenuChrome.contentInset)
         .padding(.top, topPadding)
         .padding(.bottom, MenuChrome.headerVerticalPadding)
+        .contextMenu {
+            Button("Rename") {
+                requestRename(device)
+            }
+            Button("Reset") {
+                endRenameIfNeeded()
+                if renamingIdentityKey == device.identityKey {
+                    syncRenameText()
+                }
+                pinnedOtherDeviceKeys.remove(device.identityKey)
+                if expandedOtherDeviceKey == device.identityKey {
+                    focusActiveOutput(animated: true)
+                }
+                appState.resetOutput(forIdentity: device.identityKey)
+            }
+        }
     }
 
     @ViewBuilder
     private func outputTitle(_ device: AudioOutputDevice, isFocused: Bool) -> some View {
         let key = device.identityKey
         let isRenaming = renamingIdentityKey == key
-        let isHovering = hoveringRenameKey == key
 
         if isRenaming, isFocused {
             TextField("Name", text: $renameText)
@@ -241,51 +281,32 @@ struct MenuBarView: View {
                 .focused($focusedRenameID)
                 .onSubmit { commitRename() }
                 .onChange(of: focusedRenameID) { _, focused in
-                    if !focused { commitRename() }
+                    if focused {
+                        DispatchQueue.main.async {
+                            NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+                        }
+                    } else {
+                        commitRename()
+                    }
                 }
-                .onAppear { focusedRenameID = true }
+                .onAppear {
+                    focusedRenameID = true
+                    DispatchQueue.main.async {
+                        NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
+                    }
+                }
                 .padding(.vertical, 2)
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
         } else {
-            Text(device.name)
+            Text(isFocused ? "\(device.name) EQ" : device.name)
                 .font(.system(size: MenuChrome.headerFontSize, weight: MenuChrome.headerWeight))
                 .foregroundStyle(isFocused ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color.primary.opacity(isHovering && isFocused ? 0.05 : 0))
-                        .padding(.horizontal, -4)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .strokeBorder(
-                            Color.secondary.opacity(isHovering && isFocused ? 0.35 : 0),
-                            lineWidth: 1
-                        )
-                        .padding(.horizontal, -4)
-                )
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
-                .onHover { hovering in
-                    hoveringRenameKey = hovering ? key : (hoveringRenameKey == key ? nil : hoveringRenameKey)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    handleTitleTap(device, isFocused: isFocused)
-                }
-        }
-    }
-
-    private func handleTitleTap(_ device: AudioOutputDevice, isFocused: Bool) {
-        if isFocused {
-            beginRename(device)
-        } else if device.isDefault {
-            focusActiveOutput(animated: true)
-        } else {
-            focusOtherDevice(device, animated: true)
         }
     }
 
@@ -355,8 +376,13 @@ struct MenuBarView: View {
             ScrollView(.vertical, showsIndicators: needsScroll) {
                 VStack(alignment: .leading, spacing: UnlistedDevicesMetrics.rowSpacing) {
                     ForEach(unlistedDevices, id: \.identityKey) { device in
-                        ControlCenterRow(title: device.name, style: .listItem) {
-                            selectUnlistedDevice(device)
+                        if appState.config.customEQPerDevice {
+                            ControlCenterRow(title: device.name, style: .listItem) {
+                                selectUnlistedDevice(device)
+                            }
+                        } else {
+                            // Shared EQ mode: inventory only — no select / expand / rename.
+                            ControlCenterRow(title: device.name, style: .listItem)
                         }
                     }
                 }
@@ -474,27 +500,6 @@ struct MenuBarView: View {
         appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
-    // MARK: - Shared chrome
-
-    private var permissionBanner: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("System audio access is required to apply EQ.")
-                .font(.caption)
-            HStack(spacing: 8) {
-                Button("Open Settings") { appState.openAudioPermissionSettings() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                Button("Quit & Reopen") { appState.quitAndRelaunch() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, MenuChrome.contentInset)
-        .padding(.vertical, MenuChrome.headerVerticalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12))
-    }
-
     private func pinOtherDevicesWithProfiles(reset: Bool) {
         let configured = Set(
             appState.devices.compactMap { device -> String? in
@@ -514,6 +519,19 @@ struct MenuBarView: View {
         renamingIdentityKey = nil
         renameText = ""
         focusedRenameID = false
+    }
+
+    /// Expand the row if needed, then enter rename with the name selected.
+    private func requestRename(_ device: AudioOutputDevice) {
+        let isActive = device.identityKey == activeDevice?.identityKey
+        if isActive {
+            if !isActivePanelVisible {
+                focusActiveOutput(animated: false)
+            }
+        } else if expandedOtherDeviceKey != device.identityKey || otherDevicePanelProgress < 0.5 {
+            focusOtherDevice(device, animated: false)
+        }
+        beginRename(device)
     }
 
     private func beginRename(_ device: AudioOutputDevice) {
@@ -555,14 +573,12 @@ private enum MenuChrome {
     static let sectionToContentSpacing: CGFloat = 6
     static let waveformSpacing: CGFloat = 6
     static let waveformBottomPadding: CGFloat = 2
-    /// Reserved under “Change Folder…” when no profile is selected. Equals one Other
-    /// Profiles row pitch so that selecting a profile (waveform in, list row + this
-    /// spacer out) doesn’t change panel height while the list is open.
-    static let noProfileBottomPadding: CGFloat = 36
     /// Scrim inset from the panel edge — tighter than `contentInset` so the EQ strip
     /// breaks out past the text/control column.
     static let waveformHorizontalInset: CGFloat = 6
     static let otherProfilesSectionVerticalPadding: CGFloat = 6
+    /// Dimmed chrome below the audio-permission CTA.
+    static let permissionLockedOpacity: Double = 0.4
 
     static let headerFontSize: CGFloat = 13
     static let bodyFontSize: CGFloat = 13
@@ -585,7 +601,6 @@ private enum MenuChrome {
     static let iconRowHeight: CGFloat = 34
     static let sectionRowHeight: CGFloat = 24
 
-    static let featuredIconSize: CGFloat = 26
     static let listIconSize: CGFloat = 18
     static let chevronSize: CGFloat = 10
     /// Tall enough for 24pt vertical curve inset while keeping ~16pt of plot.
@@ -629,10 +644,27 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// One Other Profiles row including the spacing beneath it. With no profile selected,
-    /// the same pitch is reserved under Change Folder so selecting a profile is height-neutral.
-    static var otherProfileRowPitch: CGFloat {
-        iconRowHeight + disclosureRowSpacing
+    /// “Active Profile” header + row + optional waveform.
+    static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
+        var height = MenuChrome.sectionTopPadding
+            + MenuChrome.sectionRowHeight
+            + iconRowHeight
+        if hasProfile {
+            height += MenuChrome.waveformSpacing
+                + MenuChrome.waveformHeight
+                + MenuChrome.waveformBottomPadding
+        }
+        return height
+    }
+
+    /// Permission slot: Active Profile header + message row + settings pill.
+    static func audioPermissionBlockHeight() -> CGFloat {
+        MenuChrome.sectionTopPadding
+            + MenuChrome.sectionRowHeight
+            + iconRowHeight
+            + MenuChrome.waveformSpacing
+            + iconRowHeight
+            + MenuChrome.waveformBottomPadding
     }
 
     static func otherProfilesListHeight(count: Int) -> CGFloat {
@@ -646,20 +678,13 @@ private enum OutputEQPanelMetrics {
         otherProfilesListHeight(count: min(profileCount, maxVisibleOtherProfileRows))
     }
 
-    /// Expanded disclosure body: scrolling profiles + sticky Change Folder, plus the
-    /// no-profile height reserve under Change Folder when needed.
-    static func otherProfilesExpandedBodyHeight(
-        profileCount: Int,
-        reservesSelectionSpacer: Bool
-    ) -> CGFloat {
+    /// Expanded disclosure body: scrolling profiles + sticky Change Folder.
+    static func otherProfilesExpandedBodyHeight(profileCount: Int) -> CGFloat {
         let scroll = otherProfilesScrollHeight(profileCount: profileCount)
-        var height: CGFloat = scroll <= 0
-            ? textRowHeight
-            : scroll + disclosureRowSpacing + textRowHeight
-        if reservesSelectionSpacer {
-            height += MenuChrome.noProfileBottomPadding
-        }
-        return height
+        // Change Folder uses `.command` → iconRowHeight (same as profile rows).
+        return scroll <= 0
+            ? iconRowHeight
+            : scroll + disclosureRowSpacing + iconRowHeight
     }
 
     @MainActor
@@ -679,23 +704,15 @@ private enum OutputEQPanelMetrics {
             height += 1 // Divider visual weight (padded elsewhere; keep tiny)
         }
 
-        // Active Profile block — matches OutputEQPanel layout.
-        height += MenuChrome.sectionTopPadding
-        height += MenuChrome.sectionRowHeight
-        height += MenuChrome.sectionToContentSpacing
-        height += iconRowHeight
-        if hasProfile {
-            height += MenuChrome.waveformSpacing
-                + MenuChrome.waveformHeight
-                + MenuChrome.waveformBottomPadding
+        if appState.needsAudioPermission {
+            height += audioPermissionBlockHeight()
+        } else {
+            height += activeProfileBlockHeight(hasProfile: hasProfile)
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // “Other Profiles” header
-        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(
-            profileCount: otherCount,
-            reservesSelectionSpacer: !hasProfile
-        )
+        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
         height += MenuChrome.otherProfilesSectionVerticalPadding
         return height
     }
@@ -723,13 +740,6 @@ private struct OutputEQPanel: View {
 
     private var hasProfile: Bool {
         mapping.profileFilename != nil
-    }
-
-    /// Same animated blob as the menu-bar icon — only for the live system output while EQ is engaged.
-    private var isLiveEQBlob: Bool {
-        hasProfile
-            && appState.isEQEngaged
-            && identityKey == appState.defaultIdentityKey
     }
 
     private var profileTitle: String {
@@ -764,6 +774,8 @@ private struct OutputEQPanel: View {
 
             otherProfilesSection
                 .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
+                .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+                .disabled(appState.needsAudioPermission)
         }
         .onAppear {
             expandOtherProfilesWhenNoProfile(animated: false)
@@ -787,7 +799,56 @@ private struct OutputEQPanel: View {
     }
 
     private var activeProfileSection: some View {
-        VStack(alignment: .leading, spacing: MenuChrome.sectionToContentSpacing) {
+        Group {
+            if appState.needsAudioPermission {
+                audioPermissionPlaceholder
+                    .frame(
+                        height: OutputEQPanelMetrics.audioPermissionBlockHeight(),
+                        alignment: .top
+                    )
+            } else {
+                let blockHeight = OutputEQPanelMetrics.activeProfileBlockHeight(hasProfile: hasProfile)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Active Profile")
+                        .font(MenuChrome.sectionFont)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: MenuChrome.sectionRowHeight, alignment: .leading)
+                        .padding(.horizontal, MenuChrome.contentInset)
+                        .padding(.top, MenuChrome.sectionTopPadding)
+
+                    ActiveProfileRow(
+                        title: profileTitle,
+                        accent: accent,
+                        hasProfile: hasProfile,
+                        showColorPicker: showColorPicker,
+                        colorPicker: { colorPopover }
+                    ) {
+                        guard hasProfile else { return }
+                        popoverChrome.animatingDisclosure {
+                            appState.setProfile(forIdentity: identityKey, filename: nil)
+                        }
+                    }
+
+                    if hasProfile {
+                        ProfileWaveformView(
+                            preview: appState.eqFrequencyResponse(forIdentity: identityKey),
+                            color: accent
+                        )
+                        .frame(height: MenuChrome.waveformHeight)
+                        .padding(.horizontal, MenuChrome.waveformHorizontalInset)
+                        .padding(.top, MenuChrome.waveformSpacing)
+                        .padding(.bottom, MenuChrome.waveformBottomPadding)
+                    }
+                }
+                .frame(height: blockHeight, alignment: .top)
+            }
+        }
+    }
+
+    /// Active Profile header + status line + Privacy & Security pill.
+    private var audioPermissionPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 0) {
             Text("Active Profile")
                 .font(MenuChrome.sectionFont)
                 .foregroundStyle(.secondary)
@@ -796,39 +857,27 @@ private struct OutputEQPanel: View {
                 .padding(.horizontal, MenuChrome.contentInset)
                 .padding(.top, MenuChrome.sectionTopPadding)
 
-            ActiveProfileRow(
-                title: profileTitle,
-                accent: accent,
-                hasProfile: hasProfile,
-                animatesBlob: isLiveEQBlob,
-                showColorPicker: showColorPicker,
-                colorPicker: { colorPopover }
-            ) {
-                guard hasProfile else { return }
-                appState.setProfile(forIdentity: identityKey, filename: nil)
-            }
+            Text("System audio access required to EQ")
+                .font(MenuChrome.bodyFont)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: MenuChrome.iconRowHeight, alignment: .leading)
+                .padding(.horizontal, MenuChrome.contentInset)
 
-            if hasProfile {
-                ProfileWaveformView(
-                    magnitudesDB: appState.eqFrequencyResponse(forIdentity: identityKey),
-                    color: accent
-                )
-                .frame(height: MenuChrome.waveformHeight)
-                .padding(.horizontal, MenuChrome.waveformHorizontalInset)
-                .padding(.top, MenuChrome.waveformSpacing - MenuChrome.sectionToContentSpacing)
-                .padding(.bottom, MenuChrome.waveformBottomPadding)
+            PermissionActionPillButton(title: "Privacy & Security Settings", showsExternalLink: true) {
+                appState.openAudioPermissionSettings()
             }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, MenuChrome.waveformSpacing)
+            .padding(.bottom, MenuChrome.waveformBottomPadding)
         }
     }
 
     private var otherProfilesSection: some View {
         let profileCount = otherProfiles.count
-        let reservesSelectionSpacer = !hasProfile
         let scrollHeight = OutputEQPanelMetrics.otherProfilesScrollHeight(profileCount: profileCount)
-        let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(
-            profileCount: profileCount,
-            reservesSelectionSpacer: reservesSelectionSpacer
-        )
+        let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: profileCount)
         let needsScroll = profileCount > OutputEQPanelMetrics.maxVisibleOtherProfileRows
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -852,7 +901,9 @@ private struct OutputEQPanel: View {
                                     profile: profile,
                                     color: appState.colorHex(forProfile: profile.filename).asHexColor
                                 ) {
-                                    appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                                    popoverChrome.animatingDisclosure {
+                                        appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                                    }
                                 }
                             }
                         }
@@ -865,9 +916,6 @@ private struct OutputEQPanel: View {
                 ControlCenterRow(title: "Change Folder…", style: .command) {
                     appState.chooseProfilesFolder(forIdentity: identityKey)
                 }
-                // Height reserve for the waveform trade — under Change Folder so
-                // “No Profile” can sit tight against Other Profiles.
-                .padding(.bottom, reservesSelectionSpacer ? MenuChrome.noProfileBottomPadding : 0)
             }
             .frame(height: otherProfilesProgress * bodyHeight, alignment: .top)
             .clipped()
@@ -906,12 +954,13 @@ private struct OutputEQPanel: View {
 // MARK: - EQ frequency-response curve
 
 private struct ProfileWaveformView: View {
-    let magnitudesDB: [Double]?
+    let preview: EQFrequencyResponsePreview?
     let color: Color
 
     private static let horizontalInset: CGFloat = 6
     private static let verticalInset: CGFloat = 24
-    private static let strokeWidth: CGFloat = 2
+    private static let strokeWidth: CGFloat = 1.25
+    private static let defaultHalfRangeDB: Double = 10
 
     var body: some View {
         Canvas { context, size in
@@ -927,7 +976,7 @@ private struct ProfileWaveformView: View {
                 lineJoin: .round
             )
 
-            guard let magnitudesDB, magnitudesDB.count >= 2 else {
+            guard let preview, preview.magnitudesDB.count >= 2 else {
                 var flat = Path()
                 let y = plot.midY
                 flat.move(to: CGPoint(x: plot.minX, y: y))
@@ -936,16 +985,10 @@ private struct ProfileWaveformView: View {
                 return
             }
 
-            let minDB = magnitudesDB.min() ?? -6
-            let maxDB = magnitudesDB.max() ?? 6
-            let pad = 1.5
-            var lo = minDB - pad
-            var hi = maxDB + pad
-            if hi - lo < 6 {
-                let mid = (hi + lo) / 2
-                lo = mid - 3
-                hi = mid + 3
-            }
+            let half = max(Self.defaultHalfRangeDB, preview.halfRangeDB)
+            let lo = -half
+            let hi = half
+            let magnitudesDB = preview.magnitudesDB
 
             var path = Path()
             let last = magnitudesDB.count - 1
@@ -978,6 +1021,41 @@ private struct ProfileWaveformView: View {
     }
 }
 
+/// Filled pill matching Open Squiglink trailing chrome + row height.
+private struct PermissionActionPillButton: View {
+    let title: String
+    var showsExternalLink: Bool = false
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 0) {
+                Text(title)
+                    .font(MenuChrome.bodyFont)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if showsExternalLink {
+                    ExternalLinkIcon()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .frame(height: MenuChrome.iconRowHeight)
+            .background {
+                RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? 0.14 : 0.10))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .onHover { isHovering = $0 }
+    }
+}
+
 // MARK: - Control Center rows
 
 private enum ControlCenterTrailing {
@@ -988,7 +1066,7 @@ private enum ControlCenterTrailing {
 }
 
 private enum ControlCenterRowStyle {
-    /// Footer / Change Folder — 13 regular, text-only height.
+    /// Footer / Change Folder — same height as profile & Other Devices rows.
     case command
     /// Other Devices list rows — same height as Other Profiles items.
     case listItem
@@ -1001,7 +1079,6 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
     let title: String
     let accent: Color
     let hasProfile: Bool
-    var animatesBlob: Bool = false
     @Binding var showColorPicker: Bool
     @ViewBuilder let colorPicker: () -> ColorPicker
     let onDeselect: () -> Void
@@ -1019,26 +1096,9 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     guard hasProfile else { return }
                     showColorPicker = true
                 } label: {
-                    Group {
-                        if animatesBlob {
-                            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-                                let level = CGFloat(appState.audioEngine.outputLevel)
-                                let phase = CGFloat(timeline.date.timeIntervalSinceReferenceDate)
-                                    * (2.2 + Double(level) * 4)
-                                AnimatedEQBlobView(
-                                    color: accent,
-                                    level: level,
-                                    phase: CGFloat(phase),
-                                    size: MenuChrome.featuredIconSize
-                                )
-                            }
-                        } else {
-                            Circle()
-                                .fill(hasProfile ? accent : Color.primary.opacity(0.12))
-                                .frame(width: MenuChrome.featuredIconSize, height: MenuChrome.featuredIconSize)
-                        }
-                    }
-                    .frame(width: MenuChrome.featuredIconSize, height: MenuChrome.featuredIconSize)
+                    Circle()
+                        .fill(hasProfile ? accent : Color.primary.opacity(0.12))
+                        .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
                 }
                 .buttonStyle(.plain)
                 .disabled(!hasProfile)
@@ -1046,58 +1106,25 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     colorPicker()
                 }
 
-                Button(action: onDeselect) {
-                    Text(title)
-                        .font(MenuChrome.bodyFont)
-                        .fontWeight(.regular)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .font(MenuChrome.bodyFont)
-                .disabled(!hasProfile)
+                Text(title)
+                    .font(MenuChrome.bodyFont)
+                    .fontWeight(.regular)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
             .padding(.horizontal, MenuChrome.contentInset)
         }
         .frame(height: MenuChrome.iconRowHeight)
         .contentShape(Rectangle())
+        .onTapGesture {
+            guard hasProfile else { return }
+            onDeselect()
+        }
         .onHover { hovering in
             isHovering = hovering && hasProfile
         }
         .focusEffectDisabled()
-    }
-}
-
-/// Menu-popover twin of the status-item blob (same geometry as `EQBlob` / menu bar icon).
-private struct AnimatedEQBlobView: View {
-    let color: Color
-    let level: CGFloat
-    let phase: CGFloat
-    let size: CGFloat
-
-    var body: some View {
-        Canvas { context, canvasSize in
-            let inset: CGFloat = 1
-            let draw = CGRect(origin: .zero, size: canvasSize).insetBy(dx: inset, dy: inset)
-            let center = CGPoint(x: draw.midX, y: draw.midY)
-            let radius = min(draw.width, draw.height) / 2 * 0.92
-            let path = EQBlob.swiftUIPath(
-                center: center,
-                radius: radius,
-                level: level,
-                phase: phase
-            )
-            // Soft halo like the status item when engaged.
-            context.stroke(
-                path,
-                with: .color(Color.primary.opacity(0.22)),
-                lineWidth: 2.2
-            )
-            context.fill(path, with: .color(color))
-        }
-        .frame(width: size, height: size)
     }
 }
 
@@ -1163,14 +1190,15 @@ private struct ControlCenterRow: View {
     let title: String
     var style: ControlCenterRowStyle = .command
     var trailing: ControlCenterTrailing = .none
-    let action: () -> Void
+    var action: (() -> Void)? = nil
 
     @State private var isHovering = false
 
+    private var isInteractive: Bool { action != nil }
+
     private var rowHeight: CGFloat {
         switch style {
-        case .command: return MenuChrome.textRowHeight
-        case .listItem: return MenuChrome.iconRowHeight
+        case .command, .listItem: return MenuChrome.iconRowHeight
         case .disclosure: return MenuChrome.sectionRowHeight
         }
     }
@@ -1186,51 +1214,58 @@ private struct ControlCenterRow: View {
 
     private var titleColor: Color {
         switch style {
-        case .command, .listItem: return .primary
+        case .command, .listItem:
+            return isInteractive ? .primary : .secondary
         case .disclosure: return .secondary
         }
     }
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
-                    .fill(isHovering ? Color.primary.opacity(0.10) : Color.clear)
-                    .padding(.horizontal, MenuChrome.highlightInset)
+        let label = ZStack {
+            RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
+                .fill(isHovering && isInteractive ? Color.primary.opacity(0.10) : Color.clear)
+                .padding(.horizontal, MenuChrome.highlightInset)
 
-                HStack(spacing: 0) {
-                    Text(title)
-                        .font(titleFont)
-                        .fontWeight(style == .disclosure ? .bold : .regular)
-                        .foregroundStyle(titleColor)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 0) {
+                Text(title)
+                    .font(titleFont)
+                    .fontWeight(style == .disclosure ? .bold : .regular)
+                    .foregroundStyle(titleColor)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                    switch trailing {
-                    case .none:
-                        EmptyView()
-                    case .chevronRight:
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    case .chevronDown:
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    case .externalLink:
-                        ExternalLinkIcon()
-                            .foregroundStyle(.secondary)
-                    }
+                switch trailing {
+                case .none:
+                    EmptyView()
+                case .chevronRight:
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                case .chevronDown:
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                case .externalLink:
+                    ExternalLinkIcon()
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, MenuChrome.contentInset)
             }
-            .frame(height: rowHeight)
-            .contentShape(Rectangle())
+            .padding(.horizontal, MenuChrome.contentInset)
         }
-        .buttonStyle(.plain)
+        .frame(height: rowHeight)
+        .contentShape(Rectangle())
+
+        Group {
+            if let action {
+                Button(action: action) { label }
+                    .buttonStyle(.plain)
+                    .onHover { isHovering = $0 }
+            } else {
+                label
+            }
+        }
         .font(titleFont)
         .focusEffectDisabled()
-        .onHover { isHovering = $0 }
     }
 }
 

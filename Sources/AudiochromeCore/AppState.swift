@@ -19,6 +19,8 @@ public final class AppState: ObservableObject {
     public let audioEngine: AudioEngine
 
     private var refreshTimer: Timer?
+    private var audioPermissionPollTimer: Timer?
+    private var lastObservedAudioPermission: SystemAudioPermission?
     /// Gate engine apply until after launch activation — cold-start taps often fail beforehand.
     private var engineSyncEnabled = false
     /// TCC dialog in flight — don't stack prompts or start a mute tap underneath it.
@@ -30,6 +32,8 @@ public final class AppState: ObservableObject {
 
     /// Invoked before system sheets/panels (e.g. Change Folder) so the menu can dismiss.
     public var onWillPresentModal: (() -> Void)?
+    /// Opens the modeless Settings window (menu stays up).
+    public var onOpenSettings: (() -> Void)?
 
     public init(
         profileStore: ProfileStore = ProfileStore(),
@@ -47,11 +51,138 @@ public final class AppState: ObservableObject {
         self.deviceService = deviceService
         self.audioEngine = audioEngine
         self.config = configStore.load()
+        // System login-item state is authoritative if the user changed it in Settings.
+        self.config.openAtLogin = LoginItem.isEnabled
 
         profileStore.ensureProfilesDirectoryExists()
         refreshAll()
         startObservingDevices()
         startPolling()
+        startObservingAppActivation()
+    }
+
+    /// Menu-bar accessories often miss a clean didBecomeActive when returning from Settings.
+    private func startObservingAppActivation() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+            guard app.bundleIdentifier == Bundle.main.bundleIdentifier else { return }
+            Task { @MainActor in
+                self.handleApplicationDidBecomeActive()
+            }
+        }
+    }
+
+    public func openSettings() {
+        onOpenSettings?()
+    }
+
+    public func syncOpenAtLoginFromSystem() {
+        let enabled = LoginItem.isEnabled
+        guard config.openAtLogin != enabled else { return }
+        var next = config
+        next.openAtLogin = enabled
+        config = next
+        configStore.save(config)
+    }
+
+    public func setOpenAtLogin(_ enabled: Bool) {
+        guard LoginItem.setEnabled(enabled) else {
+            syncOpenAtLoginFromSystem()
+            return
+        }
+        var next = config
+        next.openAtLogin = enabled
+        config = next
+        configStore.save(config)
+    }
+
+    public func setActiveEQReminders(_ enabled: Bool) {
+        var next = config
+        next.activeEQReminders = enabled
+        config = next
+        configStore.save(config)
+    }
+
+    public func setCustomEQPerDevice(_ enabled: Bool) {
+        // Menu structure changes wholesale — dismiss so the next open re-anchors cleanly
+        // instead of resizing a live panel and drifting off the top of the screen.
+        onWillPresentModal?()
+
+        var next = config
+        next.customEQPerDevice = enabled
+        if !enabled {
+            next = ensureAllAudioKnownOutput(in: next)
+            next = seedAllAudioMappingIfNeeded(in: next)
+        }
+        config = next
+        configStore.save(config)
+        objectWillChange.send()
+        forceEngineResync()
+    }
+
+    public func setAnimatedMenuBarIcon(_ enabled: Bool) {
+        var next = config
+        next.animatedMenuBarIcon = enabled
+        config = next
+        configStore.save(config)
+    }
+
+    /// Identity used for EQ mapping / UI panel for a physical (or virtual) device key.
+    public func mappingIdentityKey(for deviceKey: String) -> String {
+        config.customEQPerDevice ? deviceKey : AppConfig.allAudioIdentityKey
+    }
+
+    public var activeMappingIdentityKey: String? {
+        guard let defaultIdentityKey else {
+            return config.customEQPerDevice ? nil : AppConfig.allAudioIdentityKey
+        }
+        return mappingIdentityKey(for: defaultIdentityKey)
+    }
+
+    public var allAudioDisplayName: String {
+        let trimmed = config.knownOutputs[AppConfig.allAudioIdentityKey]?.displayName?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? AppConfig.allAudioDefaultName : trimmed
+    }
+
+    /// Menu row when Custom EQ per device is off.
+    public var allAudioDevice: AudioOutputDevice {
+        .allAudio(displayName: allAudioDisplayName)
+    }
+
+    private func ensureAllAudioKnownOutput(in config: AppConfig) -> AppConfig {
+        var next = config
+        if next.knownOutputs[AppConfig.allAudioIdentityKey] == nil {
+            next.knownOutputs[AppConfig.allAudioIdentityKey] = KnownOutput(
+                identityKey: AppConfig.allAudioIdentityKey,
+                uid: AppConfig.allAudioIdentityKey,
+                name: AppConfig.allAudioDefaultName,
+                displayName: nil
+            )
+        }
+        return next
+    }
+
+    /// Copy the current default device’s mapping into the shared slot when empty.
+    private func seedAllAudioMappingIfNeeded(in config: AppConfig) -> AppConfig {
+        var next = config
+        let shared = next.mapping(forIdentity: AppConfig.allAudioIdentityKey)
+        let sharedEmpty = shared.profileFilename == nil
+            && (shared.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        guard sharedEmpty, let defaultIdentityKey else { return next }
+        let source = next.mapping(forIdentity: defaultIdentityKey)
+        guard source.profileFilename != nil
+            || !(source.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        else { return next }
+        next.setMapping(source, forIdentity: AppConfig.allAudioIdentityKey)
+        return next
     }
 
     /// Call once the app has finished launching (and preferably after `NSApp.activate`).
@@ -65,6 +196,7 @@ public final class AppState: ObservableObject {
         restoreEngineIfNeeded()
         notifyActiveEQStatus(reason: .launch)
         eqStatusNotificationsReady = true
+        startAudioPermissionPolling()
 
         // Core Audio process taps are often not ready on the first try.
         let delays: [TimeInterval] = [0.25, 0.8, 1.8, 3.5]
@@ -96,10 +228,13 @@ public final class AppState: ObservableObject {
         }
 
         // Reading the active profile file also triggers access for that directory.
-        if let key = defaultIdentityKey,
+        if let key = activeMappingIdentityKey,
            let filename = config.mapping(forIdentity: key).profileFilename {
             let fileURL = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
             _ = try? Data(contentsOf: fileURL, options: [.mappedIfSafe])
+        }
+        if !config.customEQPerDevice {
+            _ = profilesDirectoryURL(forIdentity: AppConfig.allAudioIdentityKey)
         }
     }
 
@@ -116,13 +251,11 @@ public final class AppState: ObservableObject {
         // Don't install a mute tap until authorized. Denied → banner only.
         // Undetermined → TCC Allow dialog (no tap underneath, so audio keeps playing).
         if SystemAudioPermission.check() == .denied {
-            engineStatus = .needsAudioPermission
-            objectWillChange.send()
+            noteNeedsAudioPermission()
             return
         }
         if SystemAudioPermission.check() == .undetermined {
-            engineStatus = .needsAudioPermission
-            objectWillChange.send()
+            noteNeedsAudioPermission()
             promptForAudioPermissionIfNeeded()
             return
         }
@@ -130,8 +263,8 @@ public final class AppState: ObservableObject {
     }
 
     public var activeMapping: OutputMapping? {
-        guard let defaultIdentityKey else { return nil }
-        return config.mapping(forIdentity: defaultIdentityKey)
+        guard let key = activeMappingIdentityKey else { return nil }
+        return config.mapping(forIdentity: key)
     }
 
     public var isEQEngaged: Bool {
@@ -144,6 +277,11 @@ public final class AppState: ObservableObject {
     public var needsAudioPermission: Bool {
         if case .needsAudioPermission = engineStatus { return true }
         return false
+    }
+
+    private func noteNeedsAudioPermission() {
+        engineStatus = .needsAudioPermission
+        objectWillChange.send()
     }
 
     public var activeProfileColor: Color {
@@ -204,24 +342,33 @@ public final class AppState: ObservableObject {
 
     /// Banner when EQ is actively engaged on the system default output (launch / output switch).
     private func notifyActiveEQStatus(reason: EQStatusNotifyReason) {
-        guard let key = defaultIdentityKey else { return }
-        let mapping = config.mapping(forIdentity: key)
-        // Remind only when EQ is on — profile selected and enabled.
+        guard config.activeEQReminders else { return }
+        // Armed config isn’t enough — only remind when EQ is actually processing.
+        guard isEQEngaged else { return }
+        guard let hardwareKey = defaultIdentityKey else { return }
+        let mappingKey = mappingIdentityKey(for: hardwareKey)
+        let mapping = config.mapping(forIdentity: mappingKey)
         guard mapping.enabled, let filename = mapping.profileFilename else {
-            lastEQStatusNotifiedIdentityKey = key
+            lastEQStatusNotifiedIdentityKey = hardwareKey
             return
         }
-        if reason == .outputChanged, key == lastEQStatusNotifiedIdentityKey {
+        // Dedupe on hardware identity so output switches still remind in shared mode.
+        if reason == .outputChanged, hardwareKey == lastEQStatusNotifiedIdentityKey {
             return
         }
-        lastEQStatusNotifiedIdentityKey = key
+        lastEQStatusNotifiedIdentityKey = hardwareKey
 
-        let outputName = devices.first(where: { $0.identityKey == key })?.name
-            ?? config.knownOutputs[key]?.displayName
-            ?? "Output"
-        let profileName = profiles.first(where: { $0.filename == filename })?.displayName
+        let outputName: String
+        if config.customEQPerDevice {
+            outputName = devices.first(where: { $0.identityKey == hardwareKey })?.name
+                ?? config.knownOutputs[hardwareKey]?.resolvedName
+                ?? "Output"
+        } else {
+            outputName = allAudioDisplayName
+        }
+        let profileName = profiles(forIdentity: mappingKey).first(where: { $0.filename == filename })?.displayName
             ?? (filename as NSString).deletingPathExtension
-        let folderName = profilesDirectoryURL(forIdentity: key).lastPathComponent
+        let folderName = profilesDirectoryURL(forIdentity: mappingKey).lastPathComponent
 
         let colorHex = config.colorHex(forProfile: filename)
         switch reason {
@@ -245,7 +392,8 @@ public final class AppState: ObservableObject {
 
     /// Folder of `.txt` profiles for a given output (`nil` path → default App Support folder).
     public func profilesDirectoryURL(forIdentity identityKey: String) -> URL {
-        let path = config.mapping(forIdentity: identityKey).profilesDirectoryPath?
+        let key = mappingIdentityKey(for: identityKey)
+        let path = config.mapping(forIdentity: key).profilesDirectoryPath?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !path.isEmpty {
             return URL(fileURLWithPath: path, isDirectory: true)
@@ -254,10 +402,10 @@ public final class AppState: ObservableObject {
     }
 
     public func profilesForActiveOutput() -> [ProfileFile] {
-        guard let defaultIdentityKey else {
+        guard let key = activeMappingIdentityKey else {
             return profileStore.listProfiles()
         }
-        return profiles(forIdentity: defaultIdentityKey)
+        return profiles(forIdentity: key)
     }
 
     public func profiles(forIdentity identityKey: String) -> [ProfileFile] {
@@ -265,7 +413,8 @@ public final class AppState: ObservableObject {
     }
 
     public func setProfilesDirectory(forIdentity identityKey: String, url: URL) {
-        var mapping = config.mapping(forIdentity: identityKey)
+        let key = mappingIdentityKey(for: identityKey)
+        var mapping = config.mapping(forIdentity: key)
         mapping.profilesDirectoryPath = url.path
 
         // Drop the selection only when that profile file isn’t in the new folder.
@@ -277,7 +426,7 @@ public final class AppState: ObservableObject {
             }
         }
 
-        config.setMapping(mapping, forIdentity: identityKey)
+        config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
         refreshAll()
         forceEngineResync()
@@ -286,6 +435,8 @@ public final class AppState: ObservableObject {
     /// Inactive outputs stay listed when they have a profile or a custom profiles folder
     /// (so Change Folder doesn’t yank the row if the selection is cleared).
     public func shouldListInactiveOutput(_ identityKey: String) -> Bool {
+        guard config.customEQPerDevice else { return false }
+        guard identityKey != AppConfig.allAudioIdentityKey else { return false }
         let mapping = config.mapping(forIdentity: identityKey)
         if mapping.profileFilename != nil { return true }
         let path = mapping.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -294,6 +445,7 @@ public final class AppState: ObservableObject {
 
     /// Lets the user pick which folder supplies EQ profiles for this output.
     public func chooseProfilesFolder(forIdentity identityKey: String) {
+        let key = mappingIdentityKey(for: identityKey)
         // Status menu is `.popUpMenu` — dismiss it and raise the open panel above that level.
         onWillPresentModal?()
 
@@ -302,19 +454,19 @@ public final class AppState: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.directoryURL = profilesDirectoryURL(forIdentity: identityKey)
+        panel.directoryURL = profilesDirectoryURL(forIdentity: key)
         panel.message = "Choose a folder of EQ profiles for this output"
         panel.prompt = "Choose"
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        setProfilesDirectory(forIdentity: identityKey, url: url)
+        setProfilesDirectory(forIdentity: key, url: url)
     }
 
     public func openProfilesFolder() {
         let url: URL
-        if let defaultIdentityKey {
-            url = profilesDirectoryURL(forIdentity: defaultIdentityKey)
+        if let key = activeMappingIdentityKey {
+            url = profilesDirectoryURL(forIdentity: key)
         } else {
             profileStore.ensureProfilesDirectoryExists()
             url = profileStore.profilesDirectory
@@ -332,6 +484,10 @@ public final class AppState: ObservableObject {
     }
 
     private func ensureExpandedDevice() {
+        if !config.customEQPerDevice {
+            expandedDeviceUID = AppConfig.allAudioIdentityKey
+            return
+        }
         if let expandedDeviceUID,
            devices.contains(where: { $0.identityKey == expandedDeviceUID }) {
             return
@@ -340,12 +496,13 @@ public final class AppState: ObservableObject {
     }
 
     public func setEnabled(forIdentity identityKey: String, enabled: Bool) {
-        var mapping = config.mapping(forIdentity: identityKey)
+        let key = mappingIdentityKey(for: identityKey)
+        var mapping = config.mapping(forIdentity: key)
         if enabled, mapping.profileFilename == nil {
             return
         }
         mapping.enabled = enabled
-        config.setMapping(mapping, forIdentity: identityKey)
+        config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
         objectWillChange.send()
         syncEngine()
@@ -353,16 +510,17 @@ public final class AppState: ObservableObject {
 
     /// Toggle EQ for the current default output (used by status-item right-click).
     public func toggleActiveEQ() {
-        guard let identityKey = defaultIdentityKey else { return }
-        let mapping = config.mapping(forIdentity: identityKey)
+        guard let key = activeMappingIdentityKey else { return }
+        let mapping = config.mapping(forIdentity: key)
         if !mapping.enabled, mapping.profileFilename == nil {
             return
         }
-        setEnabled(forIdentity: identityKey, enabled: !mapping.enabled)
+        setEnabled(forIdentity: key, enabled: !mapping.enabled)
     }
 
     public func setProfile(forIdentity identityKey: String, filename: String?) {
-        var mapping = config.mapping(forIdentity: identityKey)
+        let key = mappingIdentityKey(for: identityKey)
+        var mapping = config.mapping(forIdentity: key)
         mapping.profileFilename = filename
         if let filename {
             mapping.enabled = true
@@ -371,7 +529,7 @@ public final class AppState: ObservableObject {
         } else {
             mapping.enabled = false
         }
-        config.setMapping(mapping, forIdentity: identityKey)
+        config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
         objectWillChange.send()
         syncEngine()
@@ -391,13 +549,14 @@ public final class AppState: ObservableObject {
     }
 
     public func setColor(forIdentity identityKey: String, hex: String) {
-        let mapping = config.mapping(forIdentity: identityKey)
+        let key = mappingIdentityKey(for: identityKey)
+        let mapping = config.mapping(forIdentity: key)
         if let filename = mapping.profileFilename {
             setProfileColor(filename: filename, hex: hex)
         } else {
             var next = mapping
             next.colorHex = hex
-            config.setMapping(next, forIdentity: identityKey)
+            config.setMapping(next, forIdentity: key)
             configStore.save(config)
             objectWillChange.send()
         }
@@ -408,24 +567,58 @@ public final class AppState: ObservableObject {
     }
 
     /// Log-spaced EQ magnitude curve (dB) for the active output’s selected profile.
-    public func activeEQFrequencyResponse(pointCount: Int = 96) -> [Double]? {
-        guard let key = defaultIdentityKey else { return nil }
+    public func activeEQFrequencyResponse(pointCount: Int = 96) -> EQFrequencyResponsePreview? {
+        guard let key = activeMappingIdentityKey else { return nil }
         return eqFrequencyResponse(forIdentity: key, pointCount: pointCount)
     }
 
     /// Log-spaced EQ magnitude curve (dB) for any output’s selected profile.
-    public func eqFrequencyResponse(forIdentity identityKey: String, pointCount: Int = 96) -> [Double]? {
-        let mapping = config.mapping(forIdentity: identityKey)
+    public func eqFrequencyResponse(forIdentity identityKey: String, pointCount: Int = 96) -> EQFrequencyResponsePreview? {
+        let key = mappingIdentityKey(for: identityKey)
+        let mapping = config.mapping(forIdentity: key)
         guard let filename = mapping.profileFilename else { return nil }
-        let url = profilesDirectoryURL(forIdentity: identityKey).appendingPathComponent(filename)
+        let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else { return nil }
-        return EQProcessor.frequencyResponseCurve(for: profile, pointCount: pointCount)
+        return EQFrequencyResponsePreview(
+            magnitudesDB: EQProcessor.frequencyResponseCurve(for: profile, pointCount: pointCount),
+            halfRangeDB: profile.waveformHalfRangeDB
+        )
     }
 
     public func setDisplayName(forIdentity identityKey: String, name: String) {
-        config.setDisplayName(name, forIdentity: identityKey)
+        let key = mappingIdentityKey(for: identityKey)
+        if key == AppConfig.allAudioIdentityKey {
+            var next = ensureAllAudioKnownOutput(in: config)
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            next.setDisplayName(trimmed.isEmpty ? nil : trimmed, forIdentity: key)
+            config = next
+            configStore.save(config)
+            objectWillChange.send()
+            return
+        }
+        config.setDisplayName(name, forIdentity: key)
         configStore.save(config)
         refreshAll()
+    }
+
+    /// Clears custom name, custom profiles folder, and any selected profile for an output.
+    public func resetOutput(forIdentity identityKey: String) {
+        let key = mappingIdentityKey(for: identityKey)
+        var mapping = config.mapping(forIdentity: key)
+        mapping.profileFilename = nil
+        mapping.enabled = false
+        mapping.profilesDirectoryPath = nil
+        config.setMapping(mapping, forIdentity: key)
+        if key == AppConfig.allAudioIdentityKey {
+            var next = ensureAllAudioKnownOutput(in: config)
+            next.setDisplayName(nil, forIdentity: key)
+            config = next
+        } else {
+            config.setDisplayName(nil, forIdentity: key)
+        }
+        configStore.save(config)
+        refreshAll()
+        syncEngine()
     }
 
     public func removeDevice(identityKey: String) {
@@ -467,15 +660,20 @@ public final class AppState: ObservableObject {
 
     /// Re-attempt EQ after the user may have granted System Audio Recording.
     public func retryAudioEngine() {
-        switch SystemAudioPermission.check() {
-        case .authorized:
-            forceEngineResync()
-        case .undetermined, .denied:
+        evaluateAudioPermissionChange()
+        if case .undetermined = SystemAudioPermission.check() {
             promptForAudioPermissionIfNeeded(force: true)
         }
     }
 
+    /// Call when the app becomes key again (e.g. returning from System Settings).
+    public func handleApplicationDidBecomeActive() {
+        restoreEngineIfNeeded()
+        evaluateAudioPermissionChange()
+    }
+
     public func openAudioPermissionSettings() {
+        onWillPresentModal?()
         let candidates = [
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
@@ -498,12 +696,51 @@ public final class AppState: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.audioPermissionPromptInFlight = false
+                self.lastObservedAudioPermission = SystemAudioPermission.check()
                 if granted {
                     self.forceEngineResync()
                 } else {
-                    self.engineStatus = .needsAudioPermission
-                    self.objectWillChange.send()
+                    self.noteNeedsAudioPermission()
                 }
+            }
+        }
+    }
+
+    /// Watch TCC while running (e.g. system Allow dialog grants).
+    private func startAudioPermissionPolling() {
+        guard audioPermissionPollTimer == nil else { return }
+        lastObservedAudioPermission = SystemAudioPermission.check()
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.evaluateAudioPermissionChange()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        audioPermissionPollTimer = timer
+    }
+
+    private func evaluateAudioPermissionChange() {
+        let current = SystemAudioPermission.check()
+        let previous = lastObservedAudioPermission
+        lastObservedAudioPermission = current
+        guard previous != current else { return }
+        applyAudioPermission(current)
+    }
+
+    private func applyAudioPermission(_ permission: SystemAudioPermission) {
+        switch permission {
+        case .authorized:
+            forceEngineResync()
+        case .denied, .undetermined:
+            if case .engaged = audioEngine.status {
+                audioEngine.stop(reason: .disabled)
+            }
+            let armed = activeMapping.map { $0.enabled && $0.profileFilename != nil } ?? false
+            if armed {
+                noteNeedsAudioPermission()
+            } else {
+                engineStatus = audioEngine.status
+                objectWillChange.send()
             }
         }
     }
@@ -596,7 +833,8 @@ public final class AppState: ObservableObject {
             return
         }
 
-        let mapping = config.mapping(forIdentity: defaultIdentityKey)
+        let mappingKey = mappingIdentityKey(for: defaultIdentityKey)
+        let mapping = config.mapping(forIdentity: mappingKey)
         guard mapping.enabled, let filename = mapping.profileFilename else {
             if lastSyncedEnabled != false || lastSyncedDefaultUID != device.uid {
                 audioEngine.stop(reason: .disabled)
@@ -619,7 +857,7 @@ public final class AppState: ObservableObject {
             lastSyncedDefaultUID = device.uid
             lastSyncedEnabled = true
             lastSyncedProfile = filename
-            engineStatus = .needsAudioPermission
+            noteNeedsAudioPermission()
             return
         case .undetermined:
             if case .engaged = audioEngine.status {
@@ -628,7 +866,7 @@ public final class AppState: ObservableObject {
             lastSyncedDefaultUID = device.uid
             lastSyncedEnabled = true
             lastSyncedProfile = filename
-            engineStatus = .needsAudioPermission
+            noteNeedsAudioPermission()
             promptForAudioPermissionIfNeeded()
             return
         case .authorized:
@@ -640,20 +878,25 @@ public final class AppState: ObservableObject {
            lastSyncedDefaultUID == device.uid,
            lastSyncedProfile == filename {
             if case .engaged = audioEngine.status {
+                // Still verify permission — a Settings revoke can leave us "engaged".
+                if SystemAudioPermission.check() != .authorized {
+                    audioEngine.stop(reason: .disabled)
+                    noteNeedsAudioPermission()
+                }
                 return
             }
             // Stuck "needs permission" is only sticky while capture is actually not granted.
             // Authorized-but-failed launches must fall through and retry.
             if case .needsAudioPermission = audioEngine.status,
                SystemAudioPermission.check() != .authorized {
-                engineStatus = .needsAudioPermission
+                noteNeedsAudioPermission()
                 return
             }
             lastSyncedEnabled = nil
             lastSyncedProfile = nil
         }
 
-        let url = profilesDirectoryURL(forIdentity: defaultIdentityKey)
+        let url = profilesDirectoryURL(forIdentity: mappingKey)
             .appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else {
             audioEngine.stop(reason: .invalidProfile)
@@ -683,5 +926,8 @@ public final class AppState: ObservableObject {
             }
         }
         engineStatus = audioEngine.status
+        if case .needsAudioPermission = engineStatus {
+            objectWillChange.send()
+        }
     }
 }
