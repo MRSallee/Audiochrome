@@ -7,6 +7,7 @@ import Darwin
 @available(macOS 14.2, *)
 public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     public private(set) var status: AudioEngineStatus = .idle
+    public var debugOptions = AudioEngineDebugOptions()
 
     private let processor = EQProcessor()
     private let stateLock = NSLock()
@@ -19,6 +20,26 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     private var currentDeviceUID: String?
     private var currentProfileName: String?
     private var sampleRate: Double = 48_000
+    private var appliedDebugOptions: AudioEngineDebugOptions?
+    private var lastDeviceSampleRate: Double?
+    private var lastAggregateSampleRate: Double?
+    private var lastTapSampleRate: Double?
+
+    public var diagnostics: AudioEngineDiagnostics {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let running = aggregateID != AudioDeviceID(kAudioObjectUnknown)
+        guard running else { return .idle }
+        return AudioEngineDiagnostics(
+            isRunning: true,
+            deviceSampleRateHz: lastDeviceSampleRate,
+            aggregateSampleRateHz: lastAggregateSampleRate,
+            tapSampleRateHz: lastTapSampleRate,
+            eqDesignSampleRateHz: sampleRate,
+            tapDriftCompensation: appliedDebugOptions?.tapDriftCompensation,
+            holdTapWhenBypassed: appliedDebugOptions?.holdTapWhenBypassed
+        )
+    }
 
     /// Warm bypass (EQ off, tap still up): release after sustained digital silence.
     private let silenceLock = NSLock()
@@ -49,9 +70,12 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
         clearWarmBypassTrackingUnlocked()
 
-        // Same device + engine running: only publish a new curve if it actually changed.
+        // Same device + engine running + same debug knobs: only publish a new curve.
         // (Avoids resetting biquad state every UI poll — that caused periodic pops.)
-        if aggregateID != kAudioObjectUnknown, currentDeviceUID == device.uid {
+        // Debug option changes require a full tap/aggregate rebuild.
+        if aggregateID != kAudioObjectUnknown,
+           currentDeviceUID == device.uid,
+           appliedDebugOptions == debugOptions {
             processor.update(profile: profile, sampleRate: sampleRate)
             currentProfileName = profile.name
             status = .engaged(deviceName: device.name, profileName: profile.name)
@@ -186,10 +210,14 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         tapID = tap
 
         // IOProc runs at the aggregate/output clock — design filters for that rate, not the tap's.
-        sampleRate = nominalSampleRate(for: outputDeviceID)
-            ?? tapSampleRate(for: tap)
-            ?? sampleRate
+        let deviceRate = nominalSampleRate(for: outputDeviceID)
+        let tapRate = tapSampleRate(for: tap)
+        lastDeviceSampleRate = deviceRate
+        lastTapSampleRate = tapRate
+        let nominal = deviceRate ?? tapRate ?? sampleRate
+        sampleRate = designSampleRate(nominal: nominal)
         processor.update(profile: profile, sampleRate: sampleRate)
+        appliedDebugOptions = debugOptions
 
         let aggregateUID = "app.audiochrome.aggregate.\(tapUUID)"
         let aggregateDesc: [String: Any] = [
@@ -204,7 +232,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
                 [
                     kAudioSubTapUIDKey: tapUUID,
                     // Without drift compensation Core Audio constantly resamples tap↔device clocks.
-                    kAudioSubTapDriftCompensationKey: true
+                    kAudioSubTapDriftCompensationKey: debugOptions.tapDriftCompensation
                 ]
             ],
             kAudioAggregateDeviceTapAutoStartKey: true
@@ -251,10 +279,33 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
         refreshTapExclusion(description)
 
-        if let aggRate = nominalSampleRate(for: aggregateID), abs(aggRate - sampleRate) > 0.5 {
-            sampleRate = aggRate
-            processor.update(profile: profile, sampleRate: sampleRate)
+        if let aggRate = nominalSampleRate(for: aggregateID) {
+            lastAggregateSampleRate = aggRate
+            let designRate = designSampleRate(nominal: aggRate)
+            if abs(designRate - sampleRate) > 0.5 {
+                sampleRate = designRate
+                processor.update(profile: profile, sampleRate: sampleRate)
+            }
+        } else {
+            lastAggregateSampleRate = nil
         }
+
+        NSLog(
+            "Audiochrome EQ debug: device=%.0f agg=%@ tap=%@ design=%.0f drift=%@ holdBypass=%@",
+            lastDeviceSampleRate ?? -1,
+            lastAggregateSampleRate.map { String(format: "%.0f", $0) } ?? "nil",
+            lastTapSampleRate.map { String(format: "%.0f", $0) } ?? "nil",
+            sampleRate,
+            debugOptions.tapDriftCompensation ? "on" : "off",
+            debugOptions.holdTapWhenBypassed ? "on" : "off"
+        )
+    }
+
+    private func designSampleRate(nominal: Double) -> Double {
+        if let override = debugOptions.eqSampleRateOverrideHz, override > 0 {
+            return override
+        }
+        return max(nominal, 1)
     }
 
     private func refreshTapExclusion(_ description: CATapDescription) {
@@ -316,6 +367,10 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         processor.clear()
         currentDeviceUID = nil
         currentProfileName = nil
+        appliedDebugOptions = nil
+        lastDeviceSampleRate = nil
+        lastAggregateSampleRate = nil
+        lastTapSampleRate = nil
         meterLock.lock()
         meterLevel = 0
         meterLock.unlock()
@@ -407,6 +462,14 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
         silenceLock.lock()
         guard warmBypassActive else {
+            silenceLock.unlock()
+            return
+        }
+
+        if debugOptions.holdTapWhenBypassed {
+            bypassSilentFrames = 0
+            silenceTeardownWorkItem?.cancel()
+            silenceTeardownWorkItem = nil
             silenceLock.unlock()
             return
         }

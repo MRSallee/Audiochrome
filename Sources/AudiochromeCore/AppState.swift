@@ -12,6 +12,7 @@ public final class AppState: ObservableObject {
     @Published public private(set) var defaultDeviceUID: String?
     @Published public private(set) var defaultIdentityKey: String?
     @Published public private(set) var engineStatus: AudioEngineStatus = .idle
+    @Published public private(set) var engineDiagnostics: AudioEngineDiagnostics = .idle
 
     public let profileStore: ProfileStore
     public let configStore: ConfigStore
@@ -51,6 +52,15 @@ public final class AppState: ObservableObject {
         self.deviceService = deviceService
         self.audioEngine = audioEngine
         self.config = configStore.load()
+        // While the debug UI is hidden, force shipping audio knobs (drift off, no SR override).
+        if !AppConfig.showEQAccuracyDebugSettings {
+            let shipping = AudioEngineDebugOptions()
+            if self.config.debugAudio != shipping {
+                self.config.debugAudio = shipping
+                configStore.save(self.config)
+            }
+        }
+        self.audioEngine.debugOptions = self.config.debugAudio
         // System login-item state is authoritative if the user changed it in Settings.
         self.config.openAtLogin = LoginItem.isEnabled
 
@@ -132,6 +142,32 @@ public final class AppState: ObservableObject {
         next.animatedMenuBarIcon = enabled
         config = next
         configStore.save(config)
+    }
+
+    /// Persists EQ accuracy debug knobs. Path-affecting changes restart the engine.
+    public func setDebugAudio(_ options: AudioEngineDebugOptions) {
+        let previous = config.debugAudio
+        var next = config
+        next.debugAudio = options
+        config = next
+        configStore.save(config)
+        audioEngine.debugOptions = options
+
+        let pathChanged =
+            previous.tapDriftCompensation != options.tapDriftCompensation
+            || previous.eqSampleRateOverrideHz != options.eqSampleRateOverrideHz
+            || previous.holdTapWhenBypassed != options.holdTapWhenBypassed
+        if pathChanged {
+            audioEngine.stop(reason: .outputChanged)
+            forceEngineResync()
+        } else {
+            publishEngineDiagnostics()
+            objectWillChange.send()
+        }
+    }
+
+    public func refreshEngineDiagnostics() {
+        publishEngineDiagnostics()
     }
 
     /// Identity used for EQ mapping / UI panel for a physical (or virtual) device key.
@@ -659,10 +695,26 @@ public final class AppState: ObservableObject {
         guard let filename = mapping.profileFilename else { return nil }
         let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else { return nil }
+        let sampleRate = predictedCurveSampleRate()
         return EQFrequencyResponsePreview(
-            magnitudesDB: EQProcessor.frequencyResponseCurve(for: profile, pointCount: pointCount),
+            magnitudesDB: EQProcessor.frequencyResponseCurve(
+                for: profile,
+                sampleRate: sampleRate,
+                pointCount: pointCount
+            ),
             halfRangeDB: profile.waveformHalfRangeDB
         )
+    }
+
+    /// Menu curve uses the same design rate as the live EQ when known.
+    private func predictedCurveSampleRate() -> Double {
+        if let live = audioEngine.diagnostics.eqDesignSampleRateHz, live > 0 {
+            return live
+        }
+        if let override = config.debugAudio.eqSampleRateOverrideHz, override > 0 {
+            return override
+        }
+        return 48_000
     }
 
     public func setDisplayName(forIdentity identityKey: String, name: String) {
@@ -830,6 +882,7 @@ public final class AppState: ObservableObject {
         lastSyncedEnabled = nil
         lastSyncedProfile = nil
         syncEngine()
+        publishEngineDiagnostics()
         objectWillChange.send()
         // Permission grants / late engages often land here after the launch notify raced.
         if eqStatusNotificationsReady, isEQEngaged {
@@ -902,7 +955,13 @@ public final class AppState: ObservableObject {
         }
     }
 
+    private func publishEngineDiagnostics() {
+        engineStatus = audioEngine.status
+        engineDiagnostics = audioEngine.diagnostics
+    }
+
     private func syncEngine() {
+        audioEngine.debugOptions = config.debugAudio
         guard let defaultIdentityKey,
               let device = devices.first(where: { $0.identityKey == defaultIdentityKey })
                 ?? deviceService.defaultOutputDevice()
@@ -912,7 +971,7 @@ public final class AppState: ObservableObject {
                 lastSyncedDefaultUID = nil
                 lastSyncedEnabled = false
                 lastSyncedProfile = nil
-                engineStatus = audioEngine.status
+                publishEngineDiagnostics()
             }
             return
         }
@@ -932,7 +991,7 @@ public final class AppState: ObservableObject {
                 lastSyncedDefaultUID = device.uid
                 lastSyncedEnabled = false
                 lastSyncedProfile = nil
-                engineStatus = audioEngine.status
+                publishEngineDiagnostics()
             }
             return
         }
@@ -949,6 +1008,7 @@ public final class AppState: ObservableObject {
             lastSyncedEnabled = true
             lastSyncedProfile = filename
             noteNeedsAudioPermission()
+            publishEngineDiagnostics()
             return
         case .undetermined:
             if case .engaged = audioEngine.status {
@@ -959,6 +1019,7 @@ public final class AppState: ObservableObject {
             lastSyncedProfile = filename
             noteNeedsAudioPermission()
             promptForAudioPermissionIfNeeded()
+            publishEngineDiagnostics()
             return
         case .authorized:
             break
@@ -991,7 +1052,7 @@ public final class AppState: ObservableObject {
             .appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else {
             audioEngine.stop(reason: .invalidProfile)
-            engineStatus = audioEngine.status
+            publishEngineDiagnostics()
             return
         }
 
@@ -1016,7 +1077,7 @@ public final class AppState: ObservableObject {
                 lastSyncedProfile = nil
             }
         }
-        engineStatus = audioEngine.status
+        publishEngineDiagnostics()
         if case .needsAudioPermission = engineStatus {
             objectWillChange.send()
         }

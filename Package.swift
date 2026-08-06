@@ -9,6 +9,7 @@ let package = Package(
     products: [
         .executable(name: "Audiochrome", targets: ["Audiochrome"]),
         .executable(name: "AudiochromeSmoke", targets: ["AudiochromeSmoke"]),
+        .executable(name: "AudiochromeEQAccuracy", targets: ["AudiochromeEQAccuracy"]),
         .library(name: "AudiochromeCore", targets: ["AudiochromeCore"])
     ],
     targets: [
@@ -35,6 +36,11 @@ let package = Package(
             name: "AudiochromeSmoke",
             dependencies: ["AudiochromeCore"],
             path: "Sources/AudiochromeSmoke"
+        ),
+        .executableTarget(
+            name: "AudiochromeEQAccuracy",
+            dependencies: ["AudiochromeCore"],
+            path: "Sources/AudiochromeEQAccuracy"
         )
     ]
 )

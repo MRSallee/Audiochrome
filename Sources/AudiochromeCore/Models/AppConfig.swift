@@ -95,6 +95,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
     /// Shared EQ slot when `customEQPerDevice` is off.
     public static let allAudioIdentityKey = "virtual:all-audio"
     public static let allAudioDefaultName = "All Audio"
+    /// Flip to `true` to show Settings → EQ Accuracy Debug (drift, SR override, etc.).
+    public static let showEQAccuracyDebugSettings = false
 
     /// EQ mappings keyed by identityKey.
     public var outputs: [String: OutputMapping]
@@ -112,6 +114,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var customEQPerDevice: Bool
     /// Animate the status-item blob with audio level while EQ is engaged.
     public var animatedMenuBarIcon: Bool
+    /// Process-tap / EQ accuracy A/B knobs (Settings → EQ Accuracy Debug).
+    public var debugAudio: AudioEngineDebugOptions
 
     public init(
         outputs: [String: OutputMapping] = [:],
@@ -121,7 +125,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         openAtLogin: Bool = false,
         activeEQReminders: Bool = true,
         customEQPerDevice: Bool = true,
-        animatedMenuBarIcon: Bool = true
+        animatedMenuBarIcon: Bool = true,
+        debugAudio: AudioEngineDebugOptions = AudioEngineDebugOptions()
     ) {
         self.outputs = outputs
         self.knownOutputs = knownOutputs
@@ -131,6 +136,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.activeEQReminders = activeEQReminders
         self.customEQPerDevice = customEQPerDevice
         self.animatedMenuBarIcon = animatedMenuBarIcon
+        self.debugAudio = debugAudio
     }
 
     public init(from decoder: Decoder) throws {
@@ -143,6 +149,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         activeEQReminders = try container.decodeIfPresent(Bool.self, forKey: .activeEQReminders) ?? true
         customEQPerDevice = try container.decodeIfPresent(Bool.self, forKey: .customEQPerDevice) ?? true
         animatedMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatedMenuBarIcon) ?? true
+        debugAudio = try container.decodeIfPresent(AudioEngineDebugOptions.self, forKey: .debugAudio)
+            ?? AudioEngineDebugOptions()
 
         // Migrate legacy entries that used raw UID as the only key / lacked identityKey.
         var migratedKnown: [String: KnownOutput] = [:]

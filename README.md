@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.0.1** — Menu-bar system EQ with per-output profiles, drag-and-drop import, smoother on/off transitions, seeded Documents profiles, and a packaged `.app`.  
+> **v1.0.2** — Menu-bar system EQ with per-output profiles, drag-and-drop import, smoother on/off transitions, seeded Documents profiles, and a packaged `.app`.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
