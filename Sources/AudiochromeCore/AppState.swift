@@ -193,6 +193,18 @@ public final class AppState: ObservableObject {
         // folder now so Files & Folders prompts happen at launch, not on first menu click.
         refreshAll()
         warmProfileFolderAccess()
+
+        // Ask for System Audio Recording at launch — don’t wait for the first menu open.
+        // (`restoreEngineIfNeeded` only prompts when EQ is already armed.)
+        switch SystemAudioPermission.check() {
+        case .undetermined:
+            promptForAudioPermissionIfNeeded(force: true)
+        case .denied:
+            noteNeedsAudioPermission()
+        case .authorized:
+            break
+        }
+
         restoreEngineIfNeeded()
         // Often still idle here — process taps need a beat. Retries below re-notify
         // once `isEQEngaged` is true (deduped so a fast first engage isn’t double-posted).

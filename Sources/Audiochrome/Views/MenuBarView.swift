@@ -276,6 +276,7 @@ struct MenuBarView: View {
             .focusable(false)
             .disabled(mapping.profileFilename == nil)
             .tint(accent)
+            .layoutPriority(1)
         }
         .padding(.horizontal, MenuChrome.contentInset)
         .padding(.top, topPadding)
@@ -313,9 +314,8 @@ struct MenuBarView: View {
                 onCommit: { commitRename() }
             )
             .id(renameSessionID)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: MenuChrome.textRowContentHeight)
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
         } else {
             Text(isFocused ? "\(device.name) EQ" : device.name)
                 .font(.system(
@@ -326,8 +326,8 @@ struct MenuBarView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.vertical, 2)
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(1)
+                // Must shrink — `fixedSize(horizontal:)` prevented ellipses and blew the row.
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -642,7 +642,6 @@ private struct DeviceRenameField: NSViewRepresentable {
         field.font = font
         if field.currentEditor() == nil, field.stringValue != text {
             field.stringValue = text
-            field.invalidateIntrinsicContentSize()
         }
     }
 
@@ -683,7 +682,6 @@ private struct DeviceRenameField: NSViewRepresentable {
         func controlTextDidChange(_ obj: Notification) {
             guard let field = obj.object as? NSTextField else { return }
             text.wrappedValue = field.stringValue
-            field.invalidateIntrinsicContentSize()
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
@@ -720,8 +718,8 @@ private final class RenameNSTextField: NSTextField {
     }
 
     override var intrinsicContentSize: NSSize {
-        let fitted = sizeThatFits(NSSize(width: CGFloat.greatestFiniteMagnitude, height: 24))
-        return NSSize(width: max(24, ceil(fitted.width) + 4), height: MenuChrome.textRowContentHeight)
+        // Width comes from SwiftUI’s frame — growing with the string stretched the menu.
+        NSSize(width: NSView.noIntrinsicMetric, height: MenuChrome.textRowContentHeight)
     }
 }
 
