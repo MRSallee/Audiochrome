@@ -87,16 +87,11 @@ struct MenuBarView: View {
                 clippedEQPanel(
                     identityKey: key,
                     otherProfilesProgress: $activeOtherProfilesProgress,
-                    progress: activePanelProgress,
-                    showsLeadingDivider: true
+                    progress: activePanelProgress
                 )
             }
 
             Group {
-                if !otherDevices.isEmpty {
-                    Divider().padding(.horizontal, MenuChrome.dividerInset)
-                }
-
                 ForEach(otherDevices, id: \.identityKey) { device in
                     otherDeviceSection(device)
                     if device.identityKey != otherDevices.last?.identityKey {
@@ -107,20 +102,13 @@ struct MenuBarView: View {
                 if !unlistedDevices.isEmpty {
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
                     otherDevicesDisclosure
+                    Divider().padding(.horizontal, MenuChrome.dividerInset)
+                } else if !otherDevices.isEmpty {
+                    Divider().padding(.horizontal, MenuChrome.dividerInset)
                 }
 
-                logoBreak
-
-                VStack(alignment: .leading, spacing: 0) {
-                    ControlCenterRow(title: "Settings…", style: .command) {
-                        appState.openSettings()
-                    }
-
-                    ControlCenterRow(title: "Open Squiglink", style: .command, trailing: .externalLink) {
-                        if let url = URL(string: "https://squig.link/") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
+                ControlCenterRow(title: "Settings…", style: .command) {
+                    popoverChrome.present(.settings)
                 }
             }
             .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
@@ -178,34 +166,6 @@ struct MenuBarView: View {
         pinOtherDevicesWithProfiles(reset: true)
         otherDevicesListProgress = 0
         focusActiveOutput(animated: false)
-    }
-
-    /// Brand band between device list and Settings — stacked edge-to-edge rule above the wordmark.
-    private var logoBreak: some View {
-        VStack(spacing: 0) {
-            brandBandDivider
-            AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight)
-                .padding(.horizontal, MenuChrome.contentInset)
-                .padding(.top, MenuChrome.logoBreakTopPadding)
-                .padding(.bottom, MenuChrome.logoBreakBottomPadding)
-            Divider()
-                .padding(.horizontal, MenuChrome.dividerInset)
-                // Match Settings row highlight’s trailing inset.
-                .padding(.bottom, MenuChrome.highlightInset)
-        }
-    }
-
-    /// 1pt separator + softer ~4pt band, full window width (not inset).
-    private var brandBandDivider: some View {
-        VStack(spacing: 0) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(height: MenuChrome.brandBandRuleHeight)
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(0.35))
-                .frame(height: MenuChrome.brandBandShadeHeight)
-        }
-        .accessibilityHidden(true)
     }
 
     // MARK: - Output headers (active + inactive share the same chrome)
@@ -346,21 +306,20 @@ struct MenuBarView: View {
     private func clippedEQPanel(
         identityKey: String,
         otherProfilesProgress: Binding<CGFloat>,
-        progress: CGFloat,
-        showsLeadingDivider: Bool
+        progress: CGFloat
     ) -> some View {
         let height = OutputEQPanelMetrics.height(
             appState: appState,
             identityKey: identityKey,
             otherProfilesProgress: otherProfilesProgress.wrappedValue,
-            showsLeadingDivider: showsLeadingDivider
+            showsLeadingDivider: false
         )
-        return VStack(alignment: .leading, spacing: 0) {
+        return MenuGroupedSection {
             OutputEQPanel(
                 identityKey: identityKey,
                 otherProfilesProgress: otherProfilesProgress,
                 colorPickerIdentityKey: $colorPickerIdentityKey,
-                showsLeadingDivider: showsLeadingDivider
+                showsLeadingDivider: false
             )
         }
         .frame(height: progress * height, alignment: .top)
@@ -380,8 +339,7 @@ struct MenuBarView: View {
             clippedEQPanel(
                 identityKey: device.identityKey,
                 otherProfilesProgress: $inactiveOtherProfilesProgress,
-                progress: isExpanded ? otherDevicePanelProgress : 0,
-                showsLeadingDivider: true
+                progress: isExpanded ? otherDevicePanelProgress : 0
             )
         }
     }
@@ -424,7 +382,7 @@ struct MenuBarView: View {
             .opacity(otherDevicesListProgress)
             .allowsHitTesting(otherDevicesListProgress > 0.98)
         }
-        // Match Other Profiles section chrome (padding above/below the disclosure).
+        // Match Available Profiles section chrome (padding above/below the disclosure).
         .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
     }
 
@@ -474,15 +432,13 @@ struct MenuBarView: View {
 
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
-        let preferredOtherProfiles = preferredOtherProfilesProgress(for: key)
-
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 0
                 activeOtherProfilesProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
-                inactiveOtherProfilesProgress = preferredOtherProfiles
+                inactiveOtherProfilesProgress = 0
                 colorPickerIdentityKey = nil
                 if renamingIdentityKey != key {
                     endRenameIfNeeded()
@@ -493,7 +449,7 @@ struct MenuBarView: View {
             activeOtherProfilesProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
-            inactiveOtherProfilesProgress = preferredOtherProfiles
+            inactiveOtherProfilesProgress = 0
             colorPickerIdentityKey = nil
             if renamingIdentityKey != key {
                 endRenameIfNeeded()
@@ -503,12 +459,10 @@ struct MenuBarView: View {
 
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
-        let preferredOtherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
-
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
-                activeOtherProfilesProgress = preferredOtherProfiles
+                activeOtherProfilesProgress = 0
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
                 colorPickerIdentityKey = nil
@@ -523,7 +477,7 @@ struct MenuBarView: View {
             }
         } else {
             activePanelProgress = 1
-            activeOtherProfilesProgress = preferredOtherProfiles
+            activeOtherProfilesProgress = 0
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
             inactiveOtherProfilesProgress = 0
@@ -532,11 +486,6 @@ struct MenuBarView: View {
                 endRenameIfNeeded()
             }
         }
-    }
-
-    /// No Profile → Other Profiles starts open so picking an EQ is one less click.
-    private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
-        appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
     private func pinOtherDevicesWithProfiles(reset: Bool) {
@@ -807,7 +756,7 @@ private struct RenameOutsideClickMonitor: NSViewRepresentable {
 
 // MARK: - Wi‑Fi / Control Center chrome metrics
 
-private enum MenuChrome {
+enum MenuChrome {
     static let contentInset: CGFloat = 16
     static let dividerInset: CGFloat = 16
     static let menuPadding: CGFloat = 10
@@ -821,15 +770,12 @@ private enum MenuChrome {
     static let logoHeight: CGFloat = 20
     static let logoBreakBottomPadding: CGFloat = 9
     static let logoBreakTopPadding: CGFloat = 28
-    /// Edge-to-edge stacked rule above the brand lockup.
-    static let brandBandRuleHeight: CGFloat = 1
-    static let brandBandShadeHeight: CGFloat = 4
     /// Dimmed chrome below the audio-permission CTA.
     static let permissionLockedOpacity: Double = 0.4
 
     static let headerFontSize: CGFloat = 13
     static let bodyFontSize: CGFloat = 13
-    /// Sub-header (“Active Profile”) and expanding headers (“Other Profiles”).
+    /// Sub-header (“Active Profile”) and expanding headers (“Available Profiles”).
     static let sectionFontSize: CGFloat = 12
     static let headerWeight: Font.Weight = .bold
     static let sectionWeight: Font.Weight = .bold
@@ -862,12 +808,31 @@ private enum MenuChrome {
         if #available(macOS 26, *) { return 10 }
         return 5
     }
+
+    /// Full-bleed nested-section fill (Focus “For 1 hour” band). Darker in light mode,
+    /// lighter in dark mode, so it reads on glass / vibrancy.
+    static let groupedFill = Color.primary.opacity(0.06)
+}
+
+/// Edge-to-edge dimmer behind rows that belong to the heading above.
+struct MenuGroupedSection<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(MenuChrome.groupedFill)
+        .overlay(alignment: .top) { Divider() }
+        .overlay(alignment: .bottom) { Divider() }
+    }
 }
 
 // MARK: - EQ panel (identical for active + inactive outputs)
 
 private enum UnlistedDevicesMetrics {
-    /// Match Other Profiles list rows (`iconRowHeight`), not footer command rows.
+    /// Match Available Profiles list rows (`iconRowHeight`), not footer command rows.
     static let rowHeight: CGFloat = MenuChrome.iconRowHeight
     static let rowSpacing: CGFloat = OutputEQPanelMetrics.disclosureRowSpacing
     static let maxVisibleRows = 7
@@ -958,7 +923,7 @@ private enum OutputEQPanelMetrics {
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
-        height += disclosureRowHeight // “Other Profiles” header
+        height += disclosureRowHeight // Available Profiles header
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
         height += MenuChrome.otherProfilesSectionVerticalPadding
         return height
@@ -1040,32 +1005,13 @@ private struct OutputEQPanel: View {
             let imported = appState.importAndActivateProfiles(from: urls, forIdentity: identityKey)
             if imported {
                 popoverChrome.animatingDisclosure {
-                    // Active profile replaced — collapse “Other Profiles” like a normal pick.
+                    // Active profile replaced — collapse Available Profiles like a normal pick.
                     otherProfilesProgress = 0
                 }
             }
             return imported
         } isTargeted: { targeted in
             isProfileDropTargeted = targeted
-        }
-        .onAppear {
-            expandOtherProfilesWhenNoProfile(animated: false)
-        }
-        .onChange(of: mapping.profileFilename) { _, filename in
-            if filename == nil {
-                expandOtherProfilesWhenNoProfile(animated: true)
-            }
-        }
-    }
-
-    private func expandOtherProfilesWhenNoProfile(animated: Bool) {
-        guard mapping.profileFilename == nil, otherProfilesProgress < 0.5 else { return }
-        if animated {
-            popoverChrome.animatingDisclosure {
-                otherProfilesProgress = 1
-            }
-        } else {
-            otherProfilesProgress = 1
         }
     }
 
@@ -1153,7 +1099,7 @@ private struct OutputEQPanel: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
-                title: "Other Profiles",
+                title: "Available Profiles",
                 style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
@@ -1236,6 +1182,7 @@ private struct OutputEQPanel: View {
 private struct ProfileWaveformView: View {
     let preview: EQFrequencyResponsePreview?
     let color: Color
+    @Environment(\.colorScheme) private var colorScheme
 
     private static let verticalInset: CGFloat = 24
     private static let strokeWidth: CGFloat = 1.25
@@ -1307,13 +1254,7 @@ private struct ProfileWaveformView: View {
         }
         .background {
             RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.primary.opacity(0.05), Color.primary.opacity(0)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+                .fill(Color.white.opacity(colorScheme == .dark ? 0.10 : 0.55))
         }
         .clipShape(RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous))
         // Glass re-blends translucent pixels live; bake so the fade + line stay as authored.
@@ -1322,7 +1263,7 @@ private struct ProfileWaveformView: View {
     }
 }
 
-/// Filled pill matching Open Squiglink trailing chrome + row height.
+/// Filled pill matching command-row height.
 private struct PermissionActionPillButton: View {
     let title: String
     var showsExternalLink: Bool = false
@@ -1363,15 +1304,14 @@ private enum ControlCenterTrailing {
     case none
     case chevronRight
     case chevronDown
-    case externalLink
 }
 
 private enum ControlCenterRowStyle {
     /// Footer / Change Folder — same height as profile & Other Devices rows.
     case command
-    /// Other Devices list rows — same height as Other Profiles items.
+    /// Other Devices list rows — same height as Available Profiles items.
     case listItem
-    /// “Other Profiles” / “Other Devices” — 12 bold secondary + chevron.
+    /// “Available Profiles” / “Other Devices” — 12 bold secondary + chevron.
     case disclosure
 }
 
@@ -1560,9 +1500,6 @@ private struct ControlCenterRow: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
                         .foregroundStyle(.tertiary)
-                case .externalLink:
-                    ExternalLinkIcon()
-                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, MenuChrome.contentInset)

@@ -4,6 +4,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
+    @EnvironmentObject private var popoverChrome: PopoverChrome
+
+    @State private var configSnapshot: AppConfig?
+    @State private var didCommit = false
 
     private enum SampleRateChoice: String, CaseIterable, Identifiable {
         case auto
@@ -43,11 +47,27 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            AudiochromeBrandLockup()
-                .padding(.horizontal, 6)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Settings")
+                    .font(MenuChrome.headerFont)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: MenuChrome.textRowContentHeight)
+                // Same control as a selected-output heading, so top/bottom padding matches.
+                Toggle("", isOn: .constant(false))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .hidden()
+                    .disabled(true)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, MenuChrome.menuPadding)
+            .padding(.bottom, MenuChrome.headerVerticalPadding)
 
-            settingsGroup {
+            MenuGroupedSection {
                 settingsRow(
                     title: "Open at Login",
                     isOn: Binding(
@@ -55,7 +75,7 @@ struct SettingsView: View {
                         set: { appState.setOpenAtLogin($0) }
                     )
                 )
-                Divider().padding(.leading, 14)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
                 settingsRow(
                     title: "Animated Menu Bar Icon",
                     isOn: Binding(
@@ -63,7 +83,7 @@ struct SettingsView: View {
                         set: { appState.setAnimatedMenuBarIcon($0) }
                     )
                 )
-                Divider().padding(.leading, 14)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
                 settingsRow(
                     title: "Active EQ Reminders",
                     isOn: Binding(
@@ -71,34 +91,45 @@ struct SettingsView: View {
                         set: { appState.setActiveEQReminders($0) }
                     )
                 )
-                Divider().padding(.leading, 14)
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
                 settingsRow(
                     title: "Custom EQ per device",
-                    subtitle: "Premium",
                     isOn: Binding(
                         get: { appState.config.customEQPerDevice },
                         set: { appState.setCustomEQPerDevice($0) }
                     )
                 )
+
+                if AppConfig.showEQAccuracyDebugSettings {
+                    debugSettingsSection
+                }
             }
 
-            if AppConfig.showEQAccuracyDebugSettings {
-                debugSettingsSection
+            HStack(spacing: 8) {
+                overlayButton(title: "Cancel", prominent: false, action: cancel)
+                overlayButton(title: "Save", prominent: true, action: save)
             }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, MenuChrome.logoBreakBottomPadding + MenuChrome.headerVerticalPadding)
+            .padding(.bottom, MenuChrome.logoBreakBottomPadding + MenuChrome.headerVerticalPadding)
 
-            Text(Self.versionLabel)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .opacity(0.5)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
+            Divider().padding(.horizontal, MenuChrome.dividerInset)
+
+            AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight, version: Self.versionLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, MenuChrome.contentInset)
+                .padding(.top, MenuChrome.contentInset)
+                .padding(.bottom, MenuChrome.contentInset)
         }
-        .padding(20)
-        .frame(width: 420)
+        .frame(maxWidth: .infinity, alignment: .top)
         .onAppear {
             appState.syncOpenAtLoginFromSystem()
-            if AppConfig.showEQAccuracyDebugSettings {
-                appState.refreshEngineDiagnostics()
+            configSnapshot = appState.config
+            didCommit = false
+        }
+        .onDisappear {
+            if !didCommit {
+                revert()
             }
         }
     }
@@ -109,41 +140,73 @@ struct SettingsView: View {
         return trimmed.isEmpty ? "v—" : "v\(trimmed)"
     }
 
+    private func save() {
+        didCommit = true
+        popoverChrome.dismissToHome()
+    }
+
+    private func cancel() {
+        revert()
+        didCommit = true
+        popoverChrome.dismissToHome()
+    }
+
+    private func revert() {
+        if let configSnapshot {
+            appState.restoreConfig(configSnapshot)
+        }
+    }
+
+    private func overlayButton(title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(prominent ? 0.12 : 0.06))
+                }
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+    }
+
     @ViewBuilder
     private var debugSettingsSection: some View {
         Text("EQ Accuracy Debug")
-            .font(.system(size: 11, weight: .semibold))
+            .font(MenuChrome.sectionFont)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.top, 8)
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, MenuChrome.sectionTopPadding)
+            .frame(height: MenuChrome.sectionRowHeight, alignment: .leading)
 
-        settingsGroup {
-            settingsRow(
-                title: "Tap Drift Compensation",
-                subtitle: "Shipping default off. On can crush 19–20 kHz.",
-                isOn: Binding(
-                    get: { appState.config.debugAudio.tapDriftCompensation },
-                    set: { value in updateDebug { $0.tapDriftCompensation = value } }
-                )
+        settingsRow(
+            title: "Tap Drift Compensation",
+            subtitle: "Shipping default off. On can crush 19–20 kHz.",
+            isOn: Binding(
+                get: { appState.config.debugAudio.tapDriftCompensation },
+                set: { value in updateDebug { $0.tapDriftCompensation = value } }
             )
-            Divider().padding(.leading, 14)
-            settingsRow(
-                title: "Hold Tap When EQ Off",
-                subtitle: "Keeps passthrough path up during bypass sweeps.",
-                isOn: Binding(
-                    get: { appState.config.debugAudio.holdTapWhenBypassed },
-                    set: { value in updateDebug { $0.holdTapWhenBypassed = value } }
-                )
+        )
+        Divider().padding(.horizontal, MenuChrome.dividerInset)
+        settingsRow(
+            title: "Hold Tap When EQ Off",
+            subtitle: "Keeps passthrough path up during bypass sweeps.",
+            isOn: Binding(
+                get: { appState.config.debugAudio.holdTapWhenBypassed },
+                set: { value in updateDebug { $0.holdTapWhenBypassed = value } }
             )
-            Divider().padding(.leading, 14)
-            sampleRateRow
-        }
+        )
+        Divider().padding(.horizontal, MenuChrome.dividerInset)
+        sampleRateRow
 
         Text(appState.engineDiagnostics.summaryLine)
             .font(.system(size: 10, weight: .regular).monospaced())
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
-            .padding(.horizontal, 6)
+            .padding(.horizontal, MenuChrome.contentInset)
             .padding(.top, 2)
     }
 
@@ -178,8 +241,8 @@ struct SettingsView: View {
             .frame(width: 168)
             .focusEffectDisabled()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, MenuChrome.contentInset)
+        .padding(.vertical, 8)
     }
 
     private func updateDebug(_ mutate: (inout AudioEngineDebugOptions) -> Void) {
@@ -188,31 +251,17 @@ struct SettingsView: View {
         appState.setDebugAudio(options)
     }
 
-    @ViewBuilder
-    private func settingsGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            content()
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        )
-    }
-
     private func settingsRow(
         title: String,
         subtitle: String? = nil,
         isOn: Binding<Bool>
     ) -> some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13, weight: .regular))
+                    .font(MenuChrome.bodyFont)
                     .foregroundStyle(.primary)
+                    .lineLimit(1)
                 if let subtitle {
                     Text(subtitle)
                         .font(.system(size: 11))
@@ -221,58 +270,17 @@ struct SettingsView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minHeight: MenuChrome.textRowContentHeight)
 
             Toggle("", isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .focusEffectDisabled()
                 .focusable(false)
+                .layoutPriority(1)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-}
-
-@MainActor
-final class SettingsWindowController: NSWindowController {
-    private weak var appState: AppState?
-
-    convenience init(appState: AppState) {
-        let hosting = NSHostingController(rootView: SettingsView(appState: appState))
-        hosting.sizingOptions = [.intrinsicContentSize]
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 200),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Audiochrome Settings"
-        window.contentViewController = hosting
-        window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        window.styleMask.remove(.resizable)
-        self.init(window: window)
-        self.appState = appState
-        fitToContent()
-    }
-
-    func showSettings() {
-        fitToContent()
-        guard let window else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        if !window.isVisible {
-            window.center()
-        }
-        showWindow(nil)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    private func fitToContent() {
-        guard let window, let hosting = window.contentViewController as? NSHostingController<SettingsView> else {
-            return
-        }
-        let fitting = hosting.sizeThatFits(in: NSSize(width: 420, height: 10_000))
-        window.setContentSize(NSSize(width: 420, height: ceil(fitting.height)))
+        .padding(.horizontal, MenuChrome.contentInset)
+        .padding(.top, MenuChrome.headerVerticalPadding)
+        .padding(.bottom, MenuChrome.headerVerticalPadding)
     }
 }

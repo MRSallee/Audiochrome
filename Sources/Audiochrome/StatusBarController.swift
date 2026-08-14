@@ -147,6 +147,7 @@ final class StatusBarController: NSObject, ObservableObject {
         let root = MenuBarRoot(appState: appState, chrome: chrome)
         let hosting = NSHostingController(rootView: root)
         hosting.sizingOptions = []
+        hosting.preferredContentSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.hostingHeight)
         _ = hosting.view
         hosting.view.wantsLayer = true
         hosting.view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -211,6 +212,13 @@ final class StatusBarController: NSObject, ObservableObject {
             panel.contentView = effect
         }
 
+        panel.minSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.minMeasuredHeight)
+        panel.maxSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.hostingHeight)
+        panel.contentMinSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.minMeasuredHeight)
+        panel.contentMaxSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.hostingHeight)
+        // Implicit window animations will interpolate to SwiftUI’s fitting size (sometimes 0).
+        // Height changes go through PopoverChrome’s explicit NSAnimationContext instead.
+        panel.animationBehavior = .none
         panel.alphaValue = 0
         panel.orderOut(nil)
         self.panel = panel
@@ -357,6 +365,7 @@ final class StatusBarController: NSObject, ObservableObject {
         panel?.alphaValue = 0
         isPresented = false
         setStatusItemHighlighted(false)
+        menuChrome?.resetToHome()
     }
 
     private func anchoredFrame(for size: NSSize, preferredAnchor: NSRect?) -> NSRect {
@@ -471,8 +480,6 @@ final class StatusBarController: NSObject, ObservableObject {
         let typeName = String(describing: type(of: window))
         if typeName.localizedCaseInsensitiveContains("popover") { return true }
         if window.level == .popUpMenu { return true }
-        // Modeless Settings (and similar) — keep the menu up while using them.
-        if window.title == "Audiochrome Settings" { return true }
         return false
     }
 
@@ -587,17 +594,28 @@ private enum MenuMetrics {
     static let menuBarGap: CGFloat = 5
 }
 
+/// Full-panel destinations that replace the core menu in the same window.
+enum MenuPanelScreen: Hashable {
+    case home
+    case settings
+}
+
 @MainActor
 final class PopoverChrome: ObservableObject {
     static let disclosureDuration: TimeInterval = 0.28
 
     @Published private(set) var presentationID: Int = 0
+    /// Which full-panel screen is showing. Swap in-place instead of opening a second window.
+    @Published private(set) var presentedScreen: MenuPanelScreen = .home
 
     private weak var panel: StatusMenuPanel?
     private var panelIsShowing: () -> Bool = { false }
     private var anchoredFrame: ((NSSize) -> NSRect)?
     private var measuredHeight: CGFloat = 0
+    private var heightByScreen: [MenuPanelScreen: CGFloat] = [:]
     private var expectsAnimatedHeight = false
+    /// While SwiftUI swaps screens, refuse shrinks so a 0-fitting-size frame can’t collapse the panel.
+    private var lockHeight = false
 
     func attach(_ panel: StatusMenuPanel, anchoredFrame: @escaping (NSSize) -> NSRect) {
         self.panel = panel
@@ -609,6 +627,80 @@ final class PopoverChrome: ObservableObject {
 
     func notePopoverDidShow() {
         presentationID += 1
+    }
+
+    /// Replace the core menu with another full-panel screen (Settings, later PEQ editor).
+    func present(_ screen: MenuPanelScreen) {
+        swapScreen(screen)
+    }
+
+    func dismissToHome() {
+        swapScreen(.home)
+    }
+
+    /// Instant content swap (the home menu stays mounted so it isn’t remade at Settings’
+    /// height). Height is locked across the swap so AppKit can’t collapse the panel to a
+    /// sliver while the incoming screen’s fitting size is still 0, then one window
+    /// animation runs after layout.
+    private func swapScreen(_ screen: MenuPanelScreen) {
+        guard presentedScreen != screen else { return }
+        lockHeight = true
+        freezePanelHeight()
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            withTransaction(transaction) {
+                presentedScreen = screen
+            }
+        }
+
+        expectsAnimatedHeight = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lockHeight = false
+            guard let height = self.heightByScreen[screen],
+                  height >= MenuMetrics.minMeasuredHeight,
+                  self.panelIsShowing()
+            else { return }
+            self.measuredHeight = height
+            self.expectsAnimatedHeight = false
+            self.animateHeight(to: height)
+        }
+    }
+
+    /// Pin minSize to a known-good height so implicit resizes cannot collapse us to a sliver.
+    private func freezePanelHeight() {
+        guard let panel, panelIsShowing() else { return }
+        let floor = max(
+            panel.frame.height,
+            measuredHeight,
+            heightByScreen[.home] ?? 0,
+            heightByScreen[presentedScreen] ?? 0,
+            MenuMetrics.minMeasuredHeight
+        )
+        let size = NSSize(width: MenuMetrics.width, height: floor)
+        panel.minSize = size
+        panel.contentMinSize = size
+    }
+
+    private func restoreHeightFloor() {
+        guard let panel else { return }
+        let size = NSSize(width: MenuMetrics.width, height: MenuMetrics.minMeasuredHeight)
+        panel.minSize = size
+        panel.contentMinSize = size
+    }
+
+    /// Instant reset when the menu closes so the next open is the core UI.
+    func resetToHome() {
+        lockHeight = false
+        restoreHeightFloor()
+        presentedScreen = .home
+        if let home = heightByScreen[.home], home >= MenuMetrics.minMeasuredHeight {
+            measuredHeight = home
+        }
     }
 
     /// Runs `changes` in the disclosure animation. The panel is resized by a single
@@ -629,11 +721,13 @@ final class PopoverChrome: ObservableObject {
 
     /// SwiftUI publishes its laid-out height once per change, at the start of the
     /// animation, so this is where the matching window animation is kicked off.
-    func reportMeasuredHeight(_ height: CGFloat) {
+    func reportMeasuredHeight(_ height: CGFloat, for screen: MenuPanelScreen) {
         let h = ceil(height)
         guard h >= MenuMetrics.minMeasuredHeight else { return }
+        heightByScreen[screen] = h
+        guard screen == presentedScreen else { return }
         measuredHeight = h
-        guard panelIsShowing() else { return }
+        guard panelIsShowing(), !lockHeight else { return }
 
         if expectsAnimatedHeight {
             expectsAnimatedHeight = false
@@ -644,23 +738,28 @@ final class PopoverChrome: ObservableObject {
     }
 
     func syncToMeasuredHeight() {
-        guard measuredHeight >= MenuMetrics.minMeasuredHeight else { return }
-        applyHeight(measuredHeight)
+        let height = heightByScreen[presentedScreen] ?? measuredHeight
+        guard height >= MenuMetrics.minMeasuredHeight else { return }
+        applyHeight(height)
     }
 
     /// Content height as SwiftUI last laid it out. The root view is deliberately greedy
     /// so it top-aligns in the fixed hosting view, which makes `sizeThatFits` useless.
     var contentHeight: CGFloat? {
-        measuredHeight >= MenuMetrics.minMeasuredHeight ? measuredHeight : nil
+        let height = heightByScreen[presentedScreen] ?? measuredHeight
+        return height >= MenuMetrics.minMeasuredHeight ? height : nil
     }
 
     /// Hands the whole resize to Core Animation in one go, on the same curve and duration
     /// the SwiftUI content is using, so the two stay in step without a per-frame driver.
     private func animateHeight(to height: CGFloat) {
-        guard let panel, let frame = topPinnedFrame(for: height) else { return }
+        let height = max(MenuMetrics.minMeasuredHeight, height)
+        guard panelIsShowing(), let panel, let frame = topPinnedFrame(for: height) else { return }
+        restoreHeightFloor()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = Self.disclosureDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak panel] in
             Task { @MainActor in
@@ -672,20 +771,26 @@ final class PopoverChrome: ObservableObject {
     /// Instant / structural resizes re-pin under the status item so a drifted top edge
     /// can’t accumulate (e.g. menu open while Settings flips Custom EQ per device).
     private func applyHeight(_ height: CGFloat) {
-        guard let panel else { return }
-        let size = NSSize(width: MenuMetrics.width, height: max(1, height))
+        let height = max(MenuMetrics.minMeasuredHeight, height)
+        guard panelIsShowing(), let panel else { return }
+        let size = NSSize(width: MenuMetrics.width, height: height)
         guard abs(panel.frame.height - size.height) > 0.25
             || abs(panel.frame.width - size.width) > 0.25
         else { return }
+        restoreHeightFloor()
         let frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
-        panel.setFrame(frame, display: true)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            panel.setFrame(frame, display: true)
+        }
         panel.invalidateShadow()
     }
 
     /// Grow/shrink downward from the current top edge (disclosure animation).
     private func topPinnedFrame(for height: CGFloat) -> NSRect? {
         guard let panel else { return nil }
-        let newHeight = max(1, height)
+        let newHeight = max(MenuMetrics.minMeasuredHeight, height)
         var frame = panel.frame
         guard abs(frame.height - newHeight) > 0.25 || abs(frame.width - MenuMetrics.width) > 0.25 else {
             return nil
@@ -698,10 +803,19 @@ final class PopoverChrome: ObservableObject {
 
 }
 
-private struct ViewHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+private struct MeasuredScreen<Content: View>: View {
+    let screen: MenuPanelScreen
+    @ObservedObject var chrome: PopoverChrome
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                chrome.reportMeasuredHeight(height, for: screen)
+            }
     }
 }
 
@@ -709,21 +823,27 @@ private struct MenuBarRoot: View {
     @ObservedObject var appState: AppState
     @ObservedObject var chrome: PopoverChrome
 
+    private var isHome: Bool { chrome.presentedScreen == .home }
+
     var body: some View {
-        MenuBarView()
+        MeasuredScreen(screen: .home, chrome: chrome) {
+            MenuBarView()
+        }
+            .opacity(isHome ? 1 : 0)
+            .allowsHitTesting(isHome)
+            .accessibilityHidden(!isHome)
+            .overlay(alignment: .top) {
+                if chrome.presentedScreen == .settings {
+                    MeasuredScreen(screen: .settings, chrome: chrome) {
+                        SettingsView(appState: appState)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }
+            }
             .environmentObject(appState)
             .environmentObject(chrome)
             .frame(width: MenuMetrics.width, alignment: .top)
             .fixedSize(horizontal: false, vertical: true)
-            // Glass / vibrancy lives on the AppKit content root.
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: ViewHeightKey.self, value: proxy.size.height)
-                }
-            )
-            .onPreferenceChange(ViewHeightKey.self) { height in
-                chrome.reportMeasuredHeight(height)
-            }
             // Permission banner can appear while a system sheet is up; re-sync after layout
             // settles so the panel grows instead of clipping.
             .onChange(of: appState.needsAudioPermission) { _, _ in

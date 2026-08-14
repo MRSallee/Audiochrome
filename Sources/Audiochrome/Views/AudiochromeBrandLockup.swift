@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// Wordmark + “Premium” — shared by the menu brand band and Settings header.
+/// Wordmark — shared by the menu brand band and Settings footer.
 struct AudiochromeBrandLockup: View {
     var logoHeight: CGFloat = 20
+    var version: String? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -15,14 +16,16 @@ struct AudiochromeBrandLockup: View {
                     .frame(height: logoHeight)
                     .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            Text("Premium")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            if let version {
+                Spacer(minLength: 0)
+                Text(version)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
         }
         .opacity(0.5)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Audiochrome Premium")
+        .accessibilityLabel(version.map { "Audiochrome \($0)" } ?? "Audiochrome")
     }
 
     /// Prefer Contents/Resources (copied by package-app); SPM Bundle.module is a fallback.

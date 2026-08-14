@@ -33,8 +33,6 @@ public final class AppState: ObservableObject {
 
     /// Invoked before system sheets/panels (e.g. Change Folder) so the menu can dismiss.
     public var onWillPresentModal: (() -> Void)?
-    /// Opens the modeless Settings window (menu stays up).
-    public var onOpenSettings: (() -> Void)?
 
     public init(
         profileStore: ProfileStore = ProfileStore(),
@@ -89,10 +87,6 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func openSettings() {
-        onOpenSettings?()
-    }
-
     public func syncOpenAtLoginFromSystem() {
         let enabled = LoginItem.isEnabled
         guard config.openAtLogin != enabled else { return }
@@ -121,10 +115,6 @@ public final class AppState: ObservableObject {
     }
 
     public func setCustomEQPerDevice(_ enabled: Bool) {
-        // Menu structure changes wholesale — dismiss so the next open re-anchors cleanly
-        // instead of resizing a live panel and drifting off the top of the screen.
-        onWillPresentModal?()
-
         var next = config
         next.customEQPerDevice = enabled
         if !enabled {
@@ -142,6 +132,25 @@ public final class AppState: ObservableObject {
         next.animatedMenuBarIcon = enabled
         config = next
         configStore.save(config)
+    }
+
+    /// Restore a previously snapshotted config (Settings Cancel). Re-applies login item and engine as needed.
+    public func restoreConfig(_ snapshot: AppConfig) {
+        guard snapshot != config else { return }
+        let loginChanged = snapshot.openAtLogin != config.openAtLogin
+        let pathChanged =
+            snapshot.customEQPerDevice != config.customEQPerDevice
+            || snapshot.debugAudio != config.debugAudio
+        config = snapshot
+        configStore.save(config)
+        if loginChanged {
+            _ = LoginItem.setEnabled(snapshot.openAtLogin)
+        }
+        audioEngine.debugOptions = snapshot.debugAudio
+        if pathChanged {
+            forceEngineResync()
+        }
+        objectWillChange.send()
     }
 
     /// Persists EQ accuracy debug knobs. Path-affecting changes restart the engine.
