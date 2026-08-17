@@ -13,6 +13,7 @@ public final class AppState: ObservableObject {
     @Published public private(set) var defaultIdentityKey: String?
     @Published public private(set) var engineStatus: AudioEngineStatus = .idle
     @Published public private(set) var engineDiagnostics: AudioEngineDiagnostics = .idle
+    @Published public private(set) var profileEditor: ProfileEditorDraft?
 
     public let profileStore: ProfileStore
     public let configStore: ConfigStore
@@ -582,6 +583,90 @@ public final class AppState: ObservableObject {
         setEnabled(forIdentity: key, enabled: !mapping.enabled)
     }
 
+    public func beginCreateProfile(forIdentity identityKey: String) {
+        let key = mappingIdentityKey(for: identityKey)
+        let color = colorHex(forProfile: "New Profile.txt", forIdentity: key)
+        profileEditor = .create(identityKey: key, colorHex: color)
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    public func beginEditProfile(forIdentity identityKey: String, filename: String) {
+        let key = mappingIdentityKey(for: identityKey)
+        let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
+        guard let profile = try? ProfileParser.parseFile(at: url) else { return }
+        profileEditor = .edit(
+            identityKey: key,
+            filename: filename,
+            profile: profile,
+            colorHex: colorHex(forProfile: filename, forIdentity: key)
+        )
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    public func updateProfileEditor(_ mutate: (inout ProfileEditorDraft) -> Void) {
+        guard var draft = profileEditor else { return }
+        let previous = draft
+        mutate(&draft)
+        let affectsLiveEQ =
+            previous.preampDB != draft.preampDB
+            || previous.bands != draft.bands
+            || previous.hiddenFilters != draft.hiddenFilters
+            || previous.colorHex != draft.colorHex
+        if affectsLiveEQ {
+            draft.revision += 1
+        }
+        profileEditor = draft
+        objectWillChange.send()
+        if affectsLiveEQ {
+            syncEngine()
+        }
+    }
+
+    public func applyEditorAutoPregain() {
+        updateProfileEditor { draft in
+            var preview = draft.eqProfile
+            preview.linked = ChannelEQ(preampDB: 0, filters: preview.effectiveLeft.filters)
+            let curve = EQProcessor.frequencyResponseCurve(
+                for: preview,
+                sampleRate: predictedCurveSampleRate()
+            )
+            draft.preampDB = -max(0, curve.max() ?? 0)
+        }
+    }
+
+    public func cancelProfileEditor() {
+        guard profileEditor != nil else { return }
+        profileEditor = nil
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    @discardableResult
+    public func saveProfileEditor() -> Bool {
+        guard let draft = profileEditor else { return false }
+        let key = mappingIdentityKey(for: draft.identityKey)
+        let directory = profilesDirectoryURL(forIdentity: key)
+        let original = draft.originalFilename.map {
+            ProfileFile(filename: $0, url: directory.appendingPathComponent($0))
+        }
+        do {
+            let saved = try profileStore.write(draft.eqProfile, replacing: original, in: directory)
+            if let old = draft.originalFilename, old != saved.filename {
+                config.profileColors.removeValue(forKey: old)
+            }
+            setProfileColor(filename: saved.filename, hex: draft.colorHex)
+            profileEditor = nil
+            lastSyncedProfile = nil
+            setProfile(forIdentity: key, filename: saved.filename)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     public func setProfile(forIdentity identityKey: String, filename: String?) {
         let key = mappingIdentityKey(for: identityKey)
         var mapping = config.mapping(forIdentity: key)
@@ -700,6 +785,18 @@ public final class AppState: ObservableObject {
     /// Log-spaced EQ magnitude curve (dB) for any output’s selected profile.
     public func eqFrequencyResponse(forIdentity identityKey: String, pointCount: Int = 96) -> EQFrequencyResponsePreview? {
         let key = mappingIdentityKey(for: identityKey)
+        if let draft = profileEditor, mappingIdentityKey(for: draft.identityKey) == key {
+            let profile = draft.eqProfile
+            let sampleRate = predictedCurveSampleRate()
+            return EQFrequencyResponsePreview(
+                magnitudesDB: EQProcessor.frequencyResponseCurve(
+                    for: profile,
+                    sampleRate: sampleRate,
+                    pointCount: pointCount
+                ),
+                halfRangeDB: profile.waveformHalfRangeDB
+            )
+        }
         let mapping = config.mapping(forIdentity: key)
         guard let filename = mapping.profileFilename else { return nil }
         let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
@@ -987,7 +1084,10 @@ public final class AppState: ObservableObject {
 
         let mappingKey = mappingIdentityKey(for: defaultIdentityKey)
         let mapping = config.mapping(forIdentity: mappingKey)
-        guard mapping.enabled, let filename = mapping.profileFilename else {
+        let liveDraft = profileEditor.flatMap { draft -> ProfileEditorDraft? in
+            mappingIdentityKey(for: draft.identityKey) == mappingKey ? draft : nil
+        }
+        guard mapping.enabled || liveDraft != nil, let filename = mapping.profileFilename ?? liveDraft.map({ _ in "editor" }) else {
             let deviceChanged = lastSyncedDefaultUID != nil && lastSyncedDefaultUID != device.uid
             if deviceChanged {
                 // Output moved while EQ was off — tear down the old tap.
@@ -1034,10 +1134,12 @@ public final class AppState: ObservableObject {
             break
         }
 
+        let syncToken = liveDraft.map { "editor:\($0.revision)" } ?? filename
+
         // Skip re-apply when nothing meaningful changed (prevents periodic filter resets/pops).
         if lastSyncedEnabled == true,
            lastSyncedDefaultUID == device.uid,
-           lastSyncedProfile == filename {
+           lastSyncedProfile == syncToken {
             if case .engaged = audioEngine.status {
                 // Still verify permission — a Settings revoke can leave us "engaged".
                 if SystemAudioPermission.check() != .authorized {
@@ -1057,23 +1159,29 @@ public final class AppState: ObservableObject {
             lastSyncedProfile = nil
         }
 
-        let url = profilesDirectoryURL(forIdentity: mappingKey)
-            .appendingPathComponent(filename)
-        guard let profile = try? ProfileParser.parseFile(at: url) else {
-            audioEngine.stop(reason: .invalidProfile)
-            publishEngineDiagnostics()
-            return
+        let profile: EQProfile
+        if let liveDraft {
+            profile = liveDraft.eqProfile
+        } else {
+            let url = profilesDirectoryURL(forIdentity: mappingKey)
+                .appendingPathComponent(filename)
+            guard let parsed = try? ProfileParser.parseFile(at: url) else {
+                audioEngine.stop(reason: .invalidProfile)
+                publishEngineDiagnostics()
+                return
+            }
+            profile = parsed
         }
 
         do {
             try audioEngine.apply(
                 profile: profile,
                 to: device,
-                colorHex: mapping.colorHex
+                colorHex: liveDraft?.colorHex ?? mapping.colorHex
             )
             lastSyncedDefaultUID = device.uid
             lastSyncedEnabled = true
-            lastSyncedProfile = filename
+            lastSyncedProfile = syncToken
         } catch {
             // apply() already tore down and set status (including needsAudioPermission).
             if case .needsAudioPermission = audioEngine.status {

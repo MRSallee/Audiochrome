@@ -856,7 +856,7 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// “Active Profile” header + row + optional waveform.
+    /// “Active Profile” header + row + optional waveform + Create New Profile.
     static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
         var height = MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
@@ -866,6 +866,7 @@ private enum OutputEQPanelMetrics {
                 + MenuChrome.waveformHeight
                 + MenuChrome.waveformBottomPadding
         }
+        height += iconRowHeight
         return height
     }
 
@@ -1039,7 +1040,8 @@ private struct OutputEQPanel: View {
                         accent: accent,
                         hasProfile: hasProfile,
                         showColorPicker: showColorPicker,
-                        colorPicker: { colorPopover }
+                        colorPicker: { colorPopover },
+                        onEdit: hasProfile ? { openEditEditor() } : nil
                     ) {
                         guard hasProfile else { return }
                         popoverChrome.animatingDisclosure {
@@ -1057,6 +1059,8 @@ private struct OutputEQPanel: View {
                         .padding(.top, MenuChrome.waveformSpacing)
                         .padding(.bottom, MenuChrome.waveformBottomPadding)
                     }
+
+                    PlusCommandRow(title: "Create New Profile", action: openCreateEditor)
                 }
                 .frame(height: blockHeight, alignment: .top)
             }
@@ -1175,11 +1179,22 @@ private struct OutputEQPanel: View {
         }
         .padding(10)
     }
+
+    private func openCreateEditor() {
+        appState.beginCreateProfile(forIdentity: identityKey)
+        popoverChrome.present(.eqEditor)
+    }
+
+    private func openEditEditor() {
+        guard let filename = mapping.profileFilename else { return }
+        appState.beginEditProfile(forIdentity: identityKey, filename: filename)
+        popoverChrome.present(.eqEditor)
+    }
 }
 
 // MARK: - EQ frequency-response curve
 
-private struct ProfileWaveformView: View {
+struct ProfileWaveformView: View {
     let preview: EQFrequencyResponsePreview?
     let color: Color
     @Environment(\.colorScheme) private var colorScheme
@@ -1300,13 +1315,14 @@ private struct PermissionActionPillButton: View {
 
 // MARK: - Control Center rows
 
-private enum ControlCenterTrailing {
+enum ControlCenterTrailing {
     case none
     case chevronRight
     case chevronDown
+    case externalLink
 }
 
-private enum ControlCenterRowStyle {
+enum ControlCenterRowStyle {
     /// Footer / Change Folder — same height as profile & Other Devices rows.
     case command
     /// Other Devices list rows — same height as Available Profiles items.
@@ -1322,6 +1338,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
     let hasProfile: Bool
     @Binding var showColorPicker: Bool
     @ViewBuilder let colorPicker: () -> ColorPicker
+    var onEdit: (() -> Void)? = nil
     let onDeselect: () -> Void
 
     @State private var isHovering = false
@@ -1353,15 +1370,27 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard hasProfile else { return }
+                        onDeselect()
+                    }
+
+                if hasProfile, let onEdit {
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, MenuChrome.contentInset)
         }
         .frame(height: MenuChrome.iconRowHeight)
         .contentShape(Rectangle())
-        .onTapGesture {
-            guard hasProfile else { return }
-            onDeselect()
-        }
         .onHover { hovering in
             isHovering = hovering && hasProfile
         }
@@ -1441,7 +1470,7 @@ private struct OtherProfileRow: View {
     }
 }
 
-private struct ControlCenterRow: View {
+struct ControlCenterRow: View {
     let title: String
     var style: ControlCenterRowStyle = .command
     var trailing: ControlCenterTrailing = .none
@@ -1500,6 +1529,9 @@ private struct ControlCenterRow: View {
                     Image(systemName: "chevron.down")
                         .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
                         .foregroundStyle(.tertiary)
+                case .externalLink:
+                    ExternalLinkIcon()
+                        .foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, MenuChrome.contentInset)
@@ -1521,8 +1553,76 @@ private struct ControlCenterRow: View {
     }
 }
 
+struct PlusCommandRow: View {
+    let title: String
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)
+                    .fill(isHovering ? Color.primary.opacity(0.10) : Color.clear)
+                    .padding(.horizontal, MenuChrome.highlightInset)
+
+                HStack(spacing: 10) {
+                    PlusCircleIcon()
+                        .foregroundStyle(.primary)
+                    Text(title)
+                        .font(MenuChrome.bodyFont)
+                        .fontWeight(.regular)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, MenuChrome.contentInset)
+            }
+            .frame(height: MenuChrome.iconRowHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .font(MenuChrome.bodyFont)
+        .focusEffectDisabled()
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// Plus-in-circle from the 37×37 create-profile SVG, drawn at swatch size.
+private struct PlusCircleIcon: View {
+    var body: some View {
+        PlusCircleShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+    }
+}
+
+private struct PlusCircleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 37
+        let sy = rect.height / 37
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        let center = pt(18.5, 18.5)
+        let radius = 18 * min(sx, sy)
+        path.addEllipse(in: CGRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        ))
+        path.move(to: pt(12.5, 18.5))
+        path.addLine(to: pt(24.5, 18.5))
+        path.move(to: pt(18.5, 12.5))
+        path.addLine(to: pt(18.5, 24.5))
+        return path
+    }
+}
+
 /// Matches the provided 17×17 external-link SVG (box + arrow).
-private struct ExternalLinkIcon: View {
+struct ExternalLinkIcon: View {
     var body: some View {
         ExternalLinkShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))

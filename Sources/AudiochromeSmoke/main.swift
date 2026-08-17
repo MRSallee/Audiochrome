@@ -65,6 +65,20 @@ struct SmokeMain {
             check("empty throws", false)
         }
 
+        let written = ProfileWriter.apoText(for: linked)
+        let roundTrip = try ProfileParser.parse(written, name: "round-trip")
+        check("writer round-trip preamp", abs((roundTrip.linked?.preampDB ?? 0) - (-2.8847)) < 0.0001)
+        check("writer round-trip count", roundTrip.linked?.filters.count == 2)
+        check("writer round-trip Fc", roundTrip.linked?.filters.first?.frequencyHz == 31)
+
+        let fresh = EQProfile.makeNew()
+        check("new profile name", fresh.name == "New Profile")
+        check("new profile one PK", fresh.linked?.filters.count == 1 && fresh.linked?.filters.first?.kind == .peaking)
+        check("new profile Q 1", fresh.linked?.filters.first?.q == 1)
+        check("new profile 1 kHz", fresh.linked?.filters.first?.frequencyHz == 1_000)
+        let freshRoundTrip = try ProfileParser.parse(ProfileWriter.apoText(for: fresh), name: fresh.name)
+        check("new profile writes", freshRoundTrip.linked?.filters.first?.kind == .peaking)
+
         // Device enumeration should not crash.
         let devices = AudioDeviceService().outputDevices()
         check("device list loads", true)

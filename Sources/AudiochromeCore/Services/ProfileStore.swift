@@ -108,6 +108,45 @@ public final class ProfileStore: @unchecked Sendable {
         }
     }
 
+    public static func sanitizedFilename(forDisplayName name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? "New Profile" : trimmed
+        let safe = base
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return "\(safe).txt"
+    }
+
+    /// Writes `profile` as APO text. Overwrites `original` when the display name is unchanged.
+    @discardableResult
+    public func write(
+        _ profile: EQProfile,
+        replacing original: ProfileFile?,
+        in directory: URL
+    ) throws -> ProfileFile {
+        let fm = FileManager.default
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destDir = directory.resolvingSymlinksInPath().standardizedFileURL
+        let filename = Self.sanitizedFilename(forDisplayName: profile.name)
+        let text = ProfileWriter.apoText(for: profile)
+
+        if let original {
+            let originalURL = original.url.resolvingSymlinksInPath().standardizedFileURL
+            let sameFolder = originalURL.deletingLastPathComponent().standardizedFileURL == destDir
+            if sameFolder, original.displayName == profile.name {
+                try text.write(to: originalURL, atomically: true, encoding: .utf8)
+                return ProfileFile(filename: originalURL.lastPathComponent, url: originalURL)
+            }
+        }
+
+        let destination = Self.uniqueProfileURL(for: filename, in: destDir)
+        try text.write(to: destination, atomically: true, encoding: .utf8)
+        if let original {
+            try? deleteProfileFile(at: original.url, under: destDir)
+        }
+        return ProfileFile(filename: destination.lastPathComponent, url: destination)
+    }
+
     /// Moves a profile file under `directory` to the Trash.
     public func deleteProfileFile(at url: URL, under directory: URL) throws {
         let file = url.resolvingSymlinksInPath().standardizedFileURL

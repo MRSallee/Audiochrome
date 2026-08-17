@@ -1,7 +1,7 @@
 import Foundation
 
 public struct EQFilter: Equatable, Sendable {
-    public enum Kind: String, Equatable, Sendable {
+    public enum Kind: String, Equatable, Hashable, Sendable {
         case peaking = "PK"
         case lowShelf = "LS"
         case highShelf = "HS"
@@ -33,6 +33,34 @@ public struct EQFilter: Equatable, Sendable {
                 return .allPass
             default:
                 return .unknown
+            }
+        }
+
+        /// Token written by `ProfileWriter` (`nil` = skip).
+        public var apoType: String? {
+            switch self {
+            case .peaking: return "PK"
+            case .lowShelf: return "LS"
+            case .highShelf: return "HS"
+            case .lowPass: return "LP"
+            case .highPass: return "HP"
+            case .notch: return "NO"
+            case .bandPass: return "BP"
+            case .allPass: return "AP"
+            case .unknown: return nil
+            }
+        }
+
+        public static let editorKinds: [Kind] = [.peaking, .lowShelf, .highShelf]
+
+        public var isEditorKind: Bool { Self.editorKinds.contains(self) }
+
+        public var editorLabel: String {
+            switch self {
+            case .peaking: return "PEAK"
+            case .lowShelf: return "LSQ"
+            case .highShelf: return "HSQ"
+            default: return rawValue
             }
         }
     }
@@ -104,6 +132,19 @@ public struct EQProfile: Equatable, Sendable {
     /// Waveform half-range in dB: ±10 by default, or ±max filter gain when larger.
     public var waveformHalfRangeDB: Double {
         max(10, maxAbsFilterGainDB)
+    }
+
+    /// Default new-profile curve: one peaking band at 1 kHz / 0 dB / Q 1.
+    public static func makeNew(name: String = "New Profile") -> EQProfile {
+        EQProfile(
+            name: name,
+            linked: ChannelEQ(
+                preampDB: 0,
+                filters: [
+                    EQFilter(enabled: true, kind: .peaking, frequencyHz: 1_000, gainDB: 0, q: 1)
+                ]
+            )
+        )
     }
 }
 

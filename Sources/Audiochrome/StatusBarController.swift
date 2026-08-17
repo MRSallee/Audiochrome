@@ -365,6 +365,7 @@ final class StatusBarController: NSObject, ObservableObject {
         panel?.alphaValue = 0
         isPresented = false
         setStatusItemHighlighted(false)
+        appState.cancelProfileEditor()
         menuChrome?.resetToHome()
     }
 
@@ -598,6 +599,7 @@ private enum MenuMetrics {
 enum MenuPanelScreen: Hashable {
     case home
     case settings
+    case eqEditor
 }
 
 @MainActor
@@ -836,6 +838,11 @@ private struct MenuBarRoot: View {
                 if chrome.presentedScreen == .settings {
                     MeasuredScreen(screen: .settings, chrome: chrome) {
                         SettingsView(appState: appState)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .top)
+                } else if chrome.presentedScreen == .eqEditor {
+                    MeasuredScreen(screen: .eqEditor, chrome: chrome) {
+                        ProfileEditorView(appState: appState)
                     }
                     .frame(maxWidth: .infinity, alignment: .top)
                 }
