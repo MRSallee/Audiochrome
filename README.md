@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.4.0** — Profile color ramps, a pre-EQ menu-bar meter with morphing spikes, and a log-frequency grid on the plot.  
+> **v1.4.1** — Change Folder starts at Documents when the saved folder is nested, with a folder icon; Available Profiles stays open after a pick.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

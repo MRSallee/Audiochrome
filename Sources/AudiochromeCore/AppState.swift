@@ -523,13 +523,27 @@ public final class AppState: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.directoryURL = profilesDirectoryURL(forIdentity: key)
+        panel.directoryURL = openPanelStartURL(for: profilesDirectoryURL(forIdentity: key))
         panel.message = "Choose a folder of EQ profiles for this output"
         panel.prompt = "Choose"
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         setProfilesDirectory(forIdentity: key, url: url)
+    }
+
+    /// Nested paths under Documents aren't valid picker roots (macOS falls back to home).
+    /// Start at Documents itself so the panel lands in a useful place.
+    private func openPanelStartURL(for url: URL) -> URL {
+        let start = url.resolvingSymlinksInPath().standardizedFileURL
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            return start
+        }
+        let documentsURL = documents.resolvingSymlinksInPath().standardizedFileURL
+        if start.path.hasPrefix(documentsURL.path + "/") {
+            return documentsURL
+        }
+        return start
     }
 
     public func openProfilesFolder() {

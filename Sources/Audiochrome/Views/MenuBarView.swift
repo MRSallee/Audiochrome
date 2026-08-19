@@ -1104,10 +1104,6 @@ private struct OutputEQPanel: View {
                 popoverChrome.animatingDisclosure {
                     otherProfilesProgress = 1
                 }
-            } else if otherProfilesProgress > 0.5 {
-                popoverChrome.animatingDisclosure {
-                    otherProfilesProgress = 0
-                }
             }
         }
         .background {
@@ -1123,12 +1119,6 @@ private struct OutputEQPanel: View {
         .contentShape(Rectangle())
         .dropDestination(for: URL.self) { urls, _ in
             let imported = appState.importAndActivateProfiles(from: urls, forIdentity: identityKey)
-            if imported {
-                popoverChrome.animatingDisclosure {
-                    // Active profile replaced — collapse Available Profiles like a normal pick.
-                    otherProfilesProgress = 0
-                }
-            }
             return imported
         } isTargeted: { targeted in
             isProfileDropTargeted = targeted
@@ -1244,7 +1234,6 @@ private struct OutputEQPanel: View {
                                     ).profileColor(.ui, scheme: colorScheme)
                                 ) {
                         popoverChrome.animatingDisclosure {
-                            otherProfilesProgress = 0
                             appState.setProfile(forIdentity: identityKey, filename: profile.filename)
                         }
                     } onDelete: {
@@ -1260,7 +1249,7 @@ private struct OutputEQPanel: View {
                 }
 
                 // Sticky under the scrolling list (Wi‑Fi–style).
-                ControlCenterRow(title: "Change Folder…", style: .command) {
+                ControlCenterRow(title: "Change Folder…", style: .command, leading: .folder) {
                     appState.chooseProfilesFolder(forIdentity: identityKey)
                 }
             }
@@ -1490,6 +1479,11 @@ enum ControlCenterTrailing {
     case externalLink
 }
 
+enum ControlCenterLeading {
+    case none
+    case folder
+}
+
 enum ControlCenterRowStyle {
     /// Footer / Change Folder — same height as profile & Other Devices rows.
     case command
@@ -1641,6 +1635,7 @@ private struct OtherProfileRow: View {
 struct ControlCenterRow: View {
     let title: String
     var style: ControlCenterRowStyle = .command
+    var leading: ControlCenterLeading = .none
     var trailing: ControlCenterTrailing = .none
     var action: (() -> Void)? = nil
 
@@ -1678,7 +1673,15 @@ struct ControlCenterRow: View {
                 .fill(isHovering && isInteractive ? Color.primary.opacity(0.10) : Color.clear)
                 .padding(.horizontal, MenuChrome.highlightInset)
 
-            HStack(spacing: 0) {
+            HStack(spacing: leading == .none ? 0 : 10) {
+                switch leading {
+                case .none:
+                    EmptyView()
+                case .folder:
+                    FolderOpenIcon()
+                        .foregroundStyle(.primary)
+                }
+
                 Text(title)
                     .font(titleFont)
                     .fontWeight(style == .disclosure ? .bold : .regular)
@@ -1752,6 +1755,44 @@ struct PlusCommandRow: View {
         .font(MenuChrome.bodyFont)
         .focusEffectDisabled()
         .onHover { isHovering = $0 }
+    }
+}
+
+/// Tabler `folder-open` (24×24), drawn at profile-swatch size.
+private struct FolderOpenIcon: View {
+    var body: some View {
+        FolderOpenShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+    }
+}
+
+private struct FolderOpenShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        path.move(to: pt(5, 19))
+        path.addLine(to: pt(7.757, 11.649))
+        path.addQuadCurve(to: pt(8.693, 11), control: pt(8.693, 11.649))
+        path.addLine(to: pt(21, 11))
+        path.addQuadCurve(to: pt(21.986, 12.164), control: pt(21.986, 11))
+        path.addLine(to: pt(20.99, 17.375))
+        path.addQuadCurve(to: pt(19.026, 19), control: pt(20.99, 19))
+        path.addLine(to: pt(5, 19))
+        path.addQuadCurve(to: pt(3, 17), control: pt(3, 19))
+        path.addLine(to: pt(3, 6))
+        path.addQuadCurve(to: pt(5, 4), control: pt(3, 4))
+        path.addLine(to: pt(9, 4))
+        path.addLine(to: pt(12, 7))
+        path.addLine(to: pt(19, 7))
+        path.addQuadCurve(to: pt(21, 9), control: pt(21, 7))
+        path.addLine(to: pt(21, 11))
+        return path
     }
 }
 
