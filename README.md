@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.2.0** — In-panel PEQ editor, 30 dB curve preview, and Control Center–style Settings in the menu-bar EQ.  
+> **v1.3.0** — Slide-over Settings and PEQ editor, with the last screen restored when the menu reopens.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

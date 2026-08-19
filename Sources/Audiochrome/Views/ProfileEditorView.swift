@@ -8,6 +8,7 @@ struct ProfileEditorView: View {
 
     @State private var showColorPicker = false
     @State private var isEditingName = false
+    @State private var lingeringDraft: ProfileEditorDraft?
     @State private var filterViewportHeight: CGFloat = 0
     @State private var expandedFilterHeight: CGFloat = 0
     @State private var hoveringFilterRowCount = 0
@@ -30,13 +31,18 @@ struct ProfileEditorView: View {
 
     var body: some View {
         Group {
-            if let draft = appState.profileEditor {
+            if let draft = appState.profileEditor ?? lingeringDraft {
                 editorBody(draft)
             } else {
                 Color.clear.frame(height: 280)
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
+        .onAppear { lingeringDraft = appState.profileEditor }
+        .onChange(of: appState.profileEditor) { _, new in
+            if let new { lingeringDraft = new }
+        }
+        .onDisappear { lingeringDraft = nil }
     }
 
     private func editorBody(_ draft: ProfileEditorDraft) -> some View {
@@ -154,7 +160,8 @@ struct ProfileEditorView: View {
         CollapsedBandRow {
             AppKitLabel(
                 text: "Pregain",
-                font: NSFont.systemFont(ofSize: MenuChrome.bodyFontSize, weight: .regular)
+                font: NSFont.systemFont(ofSize: MenuChrome.bodyFontSize, weight: .regular),
+                alignment: .right
             )
         } q: {
             Color.clear
@@ -557,7 +564,7 @@ private struct CollapsedBandRow<Leading: View, Q: View, F: View, G: View, Traili
     private var lane: some View {
         HStack(spacing: 8) {
             leading()
-                .frame(width: ValuePill.standardWidth, alignment: .leading)
+                .frame(width: ValuePill.standardWidth, alignment: .trailing)
             HStack(spacing: 0) {
                 q()
                     .frame(width: CollapsedColumns.qWidth, alignment: .leading)

@@ -365,8 +365,7 @@ final class StatusBarController: NSObject, ObservableObject {
         panel?.alphaValue = 0
         isPresented = false
         setStatusItemHighlighted(false)
-        appState.cancelProfileEditor()
-        menuChrome?.resetToHome()
+        menuChrome?.persistOnHide()
     }
 
     private func anchoredFrame(for size: NSSize, preferredAnchor: NSRect?) -> NSRect {
@@ -605,10 +604,15 @@ enum MenuPanelScreen: Hashable {
 @MainActor
 final class PopoverChrome: ObservableObject {
     static let disclosureDuration: TimeInterval = 0.28
+    static let screenTransitionDuration: TimeInterval = 0.20
 
     @Published private(set) var presentationID: Int = 0
-    /// Which full-panel screen is showing. Swap in-place instead of opening a second window.
+    /// Logical destination for height + chrome. Home stays mounted underneath.
     @Published private(set) var presentedScreen: MenuPanelScreen = .home
+    /// Settings / editor overlay while sliding in or out. `nil` when fully home.
+    @Published private(set) var mountedOverlay: MenuPanelScreen?
+    /// 0 = off to the right (home visible), 1 = fully covering home.
+    @Published private(set) var overlayProgress: CGFloat = 0
 
     private weak var panel: StatusMenuPanel?
     private var panelIsShowing: () -> Bool = { false }
@@ -616,8 +620,10 @@ final class PopoverChrome: ObservableObject {
     private var measuredHeight: CGFloat = 0
     private var heightByScreen: [MenuPanelScreen: CGFloat] = [:]
     private var expectsAnimatedHeight = false
+    private var pendingHeightDuration: TimeInterval = disclosureDuration
     /// While SwiftUI swaps screens, refuse shrinks so a 0-fitting-size frame can’t collapse the panel.
     private var lockHeight = false
+    private var overlayUnmountTask: Task<Void, Never>?
 
     func attach(_ panel: StatusMenuPanel, anchoredFrame: @escaping (NSSize) -> NSRect) {
         self.panel = panel
@@ -631,45 +637,82 @@ final class PopoverChrome: ObservableObject {
         presentationID += 1
     }
 
-    /// Replace the core menu with another full-panel screen (Settings, later PEQ editor).
+    /// Slide a full-panel screen in from the right over the core menu.
     func present(_ screen: MenuPanelScreen) {
-        swapScreen(screen)
-    }
-
-    func dismissToHome() {
-        swapScreen(.home)
-    }
-
-    /// Instant content swap (the home menu stays mounted so it isn’t remade at Settings’
-    /// height). Height is locked across the swap so AppKit can’t collapse the panel to a
-    /// sliver while the incoming screen’s fitting size is still 0, then one window
-    /// animation runs after layout.
-    private func swapScreen(_ screen: MenuPanelScreen) {
-        guard presentedScreen != screen else { return }
-        lockHeight = true
-        freezePanelHeight()
-
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            withTransaction(transaction) {
-                presentedScreen = screen
-            }
+        guard screen != .home else {
+            dismissToHome()
+            return
         }
-
-        expectsAnimatedHeight = true
+        guard presentedScreen != screen else { return }
+        overlayUnmountTask?.cancel()
+        overlayUnmountTask = nil
+        mountOverlay(screen, progress: mountedOverlay == screen ? overlayProgress : 0)
+        presentedScreen = screen
+        beginHeightTransition(duration: Self.screenTransitionDuration)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.lockHeight = false
-            guard let height = self.heightByScreen[screen],
-                  height >= MenuMetrics.minMeasuredHeight,
-                  self.panelIsShowing()
-            else { return }
-            self.measuredHeight = height
-            self.expectsAnimatedHeight = false
-            self.animateHeight(to: height)
+            withAnimation(.easeInOut(duration: Self.screenTransitionDuration)) {
+                self.overlayProgress = 1
+            }
+            self.kickHeightAnimation(for: screen)
+        }
+    }
+
+    /// Slide the overlay back out and restore the core menu height.
+    func dismissToHome() {
+        guard presentedScreen != .home else { return }
+        presentedScreen = .home
+        beginHeightTransition(duration: Self.screenTransitionDuration)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lockHeight = false
+            withAnimation(.easeInOut(duration: Self.screenTransitionDuration)) {
+                self.overlayProgress = 0
+            }
+            self.kickHeightAnimation(for: .home)
+            self.scheduleOverlayUnmount()
+        }
+    }
+
+    private func mountOverlay(_ screen: MenuPanelScreen, progress: CGFloat) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            mountedOverlay = screen
+            overlayProgress = progress
+        }
+    }
+
+    private func beginHeightTransition(duration: TimeInterval) {
+        lockHeight = true
+        freezePanelHeight()
+        expectsAnimatedHeight = true
+        pendingHeightDuration = duration
+    }
+
+    private func kickHeightAnimation(for screen: MenuPanelScreen) {
+        guard let height = heightByScreen[screen],
+              height >= MenuMetrics.minMeasuredHeight,
+              panelIsShowing()
+        else { return }
+        measuredHeight = height
+        expectsAnimatedHeight = false
+        animateHeight(to: height)
+    }
+
+    private func scheduleOverlayUnmount() {
+        overlayUnmountTask?.cancel()
+        overlayUnmountTask = Task { @MainActor [weak self] in
+            let delay = PopoverChrome.screenTransitionDuration + 0.05
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            guard self.presentedScreen == .home, self.overlayProgress < 0.01 else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                self.mountedOverlay = nil
+            }
         }
     }
 
@@ -695,13 +738,25 @@ final class PopoverChrome: ObservableObject {
         panel.contentMinSize = size
     }
 
-    /// Instant reset when the menu closes so the next open is the core UI.
-    func resetToHome() {
+    /// Keep the current screen when the menu hides so the next open returns there.
+    func persistOnHide() {
+        overlayUnmountTask?.cancel()
+        overlayUnmountTask = nil
         lockHeight = false
         restoreHeightFloor()
-        presentedScreen = .home
-        if let home = heightByScreen[.home], home >= MenuMetrics.minMeasuredHeight {
-            measuredHeight = home
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if presentedScreen == .home {
+                overlayProgress = 0
+                mountedOverlay = nil
+            } else {
+                overlayProgress = 1
+                mountedOverlay = presentedScreen
+            }
+        }
+        if let height = heightByScreen[presentedScreen], height >= MenuMetrics.minMeasuredHeight {
+            measuredHeight = height
         }
     }
 
@@ -711,6 +766,7 @@ final class PopoverChrome: ObservableObject {
     /// a frame or two late and leave the panel edges jittering.
     func animatingDisclosure(_ changes: () -> Void) {
         expectsAnimatedHeight = true
+        pendingHeightDuration = Self.disclosureDuration
         withAnimation(.easeInOut(duration: Self.disclosureDuration)) {
             changes()
         }
@@ -759,7 +815,7 @@ final class PopoverChrome: ObservableObject {
         guard panelIsShowing(), let panel, let frame = topPinnedFrame(for: height) else { return }
         restoreHeightFloor()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = Self.disclosureDuration
+            context.duration = pendingHeightDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
@@ -824,28 +880,23 @@ private struct MeasuredScreen<Content: View>: View {
 private struct MenuBarRoot: View {
     @ObservedObject var appState: AppState
     @ObservedObject var chrome: PopoverChrome
+    @Environment(\.colorScheme) private var colorScheme
 
-    private var isHome: Bool { chrome.presentedScreen == .home }
+    private var homeIsInteractive: Bool { chrome.overlayProgress < 0.98 }
 
     var body: some View {
         MeasuredScreen(screen: .home, chrome: chrome) {
             MenuBarView()
         }
-            .opacity(isHome ? 1 : 0)
-            .allowsHitTesting(isHome)
-            .accessibilityHidden(!isHome)
-            .overlay(alignment: .top) {
-                if chrome.presentedScreen == .settings {
-                    MeasuredScreen(screen: .settings, chrome: chrome) {
-                        SettingsView(appState: appState)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                } else if chrome.presentedScreen == .eqEditor {
-                    MeasuredScreen(screen: .eqEditor, chrome: chrome) {
-                        ProfileEditorView(appState: appState)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                }
+            .overlay {
+                Rectangle()
+                    .fill(Color.black.opacity(0.32 * chrome.overlayProgress))
+                    .allowsHitTesting(chrome.overlayProgress > 0.02)
+            }
+            .allowsHitTesting(homeIsInteractive)
+            .accessibilityHidden(!homeIsInteractive)
+            .overlay(alignment: .topLeading) {
+                slidingOverlay
             }
             .environmentObject(appState)
             .environmentObject(chrome)
@@ -865,5 +916,44 @@ private struct MenuBarRoot: View {
             // so the panel's height comes from the measurement above, never from asking
             // the hosting controller what size it wants.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var slidingOverlay: some View {
+        if let screen = chrome.mountedOverlay, screen != .home {
+            MeasuredScreen(screen: screen, chrome: chrome) {
+                overlayScreen(screen)
+                    .frame(width: MenuMetrics.width, alignment: .top)
+                    .background { overlayVeil }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .offset(x: (1 - chrome.overlayProgress) * MenuMetrics.width)
+            .allowsHitTesting(chrome.overlayProgress > 0.02)
+            .accessibilityHidden(chrome.overlayProgress < 0.5)
+        }
+    }
+
+    @ViewBuilder
+    private func overlayScreen(_ screen: MenuPanelScreen) -> some View {
+        switch screen {
+        case .home:
+            EmptyView()
+        case .settings:
+            SettingsView(appState: appState)
+        case .eqEditor:
+            ProfileEditorView(appState: appState)
+        }
+    }
+
+    private var overlayVeil: some View {
+        Rectangle()
+            .fill(.regularMaterial)
+            .overlay {
+                Rectangle().fill(
+                    colorScheme == .dark
+                        ? Color.black.opacity(0.18)
+                        : Color.white.opacity(0.42)
+                )
+            }
     }
 }

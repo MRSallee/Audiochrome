@@ -11,10 +11,14 @@ struct HeaderCommitControls: View {
         static let pointDepth: CGFloat = 8
         static let gap: CGFloat = 4
         static let cornerRadius: CGFloat = 6
-        static let saveFillOpacity = 0.10
-        static let cancelFillOpacity = 0.05
+        /// Matches `ValuePill` default fill.
+        static let chromeOpacity = 0.10
         static let iconSize: CGFloat = MenuChrome.listIconSize
         static let iconNudgeX: CGFloat = -2
+    }
+
+    private var backShape: BackChipShape {
+        BackChipShape(pointDepth: Metrics.pointDepth, cornerRadius: Metrics.cornerRadius)
     }
 
     var body: some View {
@@ -28,12 +32,13 @@ struct HeaderCommitControls: View {
                         .frame(width: Metrics.closeWidth, height: Metrics.height)
                 }
                 .background {
-                    BackChipShape(
-                        pointDepth: Metrics.pointDepth,
-                        cornerRadius: Metrics.cornerRadius
-                    )
-                    .fill(Color.primary.opacity(Metrics.cancelFillOpacity))
+                    // Fully clear skips hit-testing; a hair of alpha keeps the chip clickable.
+                    backShape.fill(Color.white.opacity(0.001))
                 }
+                .overlay {
+                    backShape.stroke(Color.primary.opacity(Metrics.chromeOpacity), lineWidth: 1)
+                }
+                .contentShape(backShape)
             }
             .buttonStyle(.plain)
             .focusEffectDisabled()
@@ -47,7 +52,7 @@ struct HeaderCommitControls: View {
                     .frame(width: MenuChrome.switchWidth, height: Metrics.height)
                     .background {
                         RoundedRectangle(cornerRadius: Metrics.cornerRadius, style: .continuous)
-                            .fill(Color.primary.opacity(Metrics.saveFillOpacity))
+                            .fill(Color.primary.opacity(Metrics.chromeOpacity))
                     }
             }
             .buttonStyle(.plain)
