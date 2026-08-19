@@ -54,14 +54,9 @@ struct SettingsView: View {
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(minHeight: MenuChrome.textRowContentHeight)
-                // Same control as a selected-output heading, so top/bottom padding matches.
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .hidden()
-                    .disabled(true)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+
+                HeaderCommitControls(onCancel: cancel, onSave: save)
+                    .layoutPriority(1)
             }
             .padding(.horizontal, MenuChrome.contentInset)
             .padding(.top, MenuChrome.menuPadding)
@@ -105,16 +100,6 @@ struct SettingsView: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                overlayButton(title: "Cancel", prominent: false, action: cancel)
-                overlayButton(title: "Save", prominent: true, action: save)
-            }
-            .padding(.horizontal, MenuChrome.contentInset)
-            .padding(.top, MenuChrome.logoBreakBottomPadding + MenuChrome.headerVerticalPadding)
-            .padding(.bottom, MenuChrome.logoBreakBottomPadding + MenuChrome.headerVerticalPadding)
-
-            Divider().padding(.horizontal, MenuChrome.dividerInset)
-
             AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight, version: Self.versionLabel)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MenuChrome.contentInset)
@@ -155,22 +140,6 @@ struct SettingsView: View {
         if let configSnapshot {
             appState.restoreConfig(configSnapshot)
         }
-    }
-
-    private func overlayButton(title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .regular))
-                .foregroundStyle(.primary)
-                .frame(maxWidth: .infinity)
-                .frame(height: 34)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(prominent ? 0.12 : 0.06))
-                }
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
     }
 
     @ViewBuilder

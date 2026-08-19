@@ -586,7 +586,9 @@ public final class AppState: ObservableObject {
     public func beginCreateProfile(forIdentity identityKey: String) {
         let key = mappingIdentityKey(for: identityKey)
         let color = colorHex(forProfile: "New Profile.txt", forIdentity: key)
-        profileEditor = .create(identityKey: key, colorHex: color)
+        var draft = ProfileEditorDraft.create(identityKey: key, colorHex: color)
+        draft.preampDB = autoPregainDB(for: draft)
+        profileEditor = draft
         objectWillChange.send()
         syncEngine()
     }
@@ -595,12 +597,14 @@ public final class AppState: ObservableObject {
         let key = mappingIdentityKey(for: identityKey)
         let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else { return }
-        profileEditor = .edit(
+        var draft = ProfileEditorDraft.edit(
             identityKey: key,
             filename: filename,
             profile: profile,
             colorHex: colorHex(forProfile: filename, forIdentity: key)
         )
+        draft.preampDB = autoPregainDB(for: draft)
+        profileEditor = draft
         objectWillChange.send()
         syncEngine()
     }
@@ -609,6 +613,13 @@ public final class AppState: ObservableObject {
         guard var draft = profileEditor else { return }
         let previous = draft
         mutate(&draft)
+        let bandsChanged = previous.bands != draft.bands || previous.hiddenFilters != draft.hiddenFilters
+        if previous.preampDB != draft.preampDB, previous.isAutoPregain {
+            draft.isAutoPregain = false
+        }
+        if draft.isAutoPregain, bandsChanged || !previous.isAutoPregain {
+            draft.preampDB = autoPregainDB(for: draft)
+        }
         let affectsLiveEQ =
             previous.preampDB != draft.preampDB
             || previous.bands != draft.bands
@@ -624,16 +635,15 @@ public final class AppState: ObservableObject {
         }
     }
 
-    public func applyEditorAutoPregain() {
-        updateProfileEditor { draft in
-            var preview = draft.eqProfile
-            preview.linked = ChannelEQ(preampDB: 0, filters: preview.effectiveLeft.filters)
-            let curve = EQProcessor.frequencyResponseCurve(
-                for: preview,
-                sampleRate: predictedCurveSampleRate()
-            )
-            draft.preampDB = -max(0, curve.max() ?? 0)
-        }
+    private func autoPregainDB(for draft: ProfileEditorDraft) -> Double {
+        var preview = draft.eqProfile
+        preview.linked = ChannelEQ(preampDB: 0, filters: preview.effectiveLeft.filters)
+        let curve = EQProcessor.frequencyResponseCurve(
+            for: preview,
+            sampleRate: predictedCurveSampleRate()
+        )
+        let raw = -max(0, curve.max() ?? 0)
+        return min(12, max(-30, (raw * 10).rounded() / 10))
     }
 
     public func cancelProfileEditor() {

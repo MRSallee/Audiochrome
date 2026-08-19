@@ -21,6 +21,8 @@ public struct ProfileEditorDraft: Equatable, Sendable {
     /// LP/HP/notch/etc. kept on save but not shown in the 2.0 UI.
     public var hiddenFilters: [EQFilter]
     public var expandedBandID: UUID?
+    /// When true, pregain is recalculated whenever filters change.
+    public var isAutoPregain: Bool
     public var revision: Int
 
     public var eqProfile: EQProfile {
@@ -42,6 +44,7 @@ public struct ProfileEditorDraft: Equatable, Sendable {
             bands: bands,
             hiddenFilters: [],
             expandedBandID: bands.first?.id,
+            isAutoPregain: true,
             revision: 0
         )
     }
@@ -70,7 +73,8 @@ public struct ProfileEditorDraft: Equatable, Sendable {
             preampDB: channel.preampDB,
             bands: bands,
             hiddenFilters: hidden,
-            expandedBandID: bands.first?.id,
+            expandedBandID: nil,
+            isAutoPregain: true,
             revision: 0
         )
     }
@@ -86,7 +90,7 @@ public struct ProfileEditorDraft: Equatable, Sendable {
     public mutating func removeBand(id: UUID) {
         bands.removeAll { $0.id == id }
         if expandedBandID == id {
-            expandedBandID = bands.first?.id
+            expandedBandID = nil
         }
     }
 }

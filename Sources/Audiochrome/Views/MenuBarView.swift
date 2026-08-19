@@ -110,6 +110,7 @@ struct MenuBarView: View {
                 ControlCenterRow(title: "Settings…", style: .command) {
                     popoverChrome.present(.settings)
                 }
+                .padding(.top, MenuChrome.waveformSpacing)
             }
             .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
             .disabled(appState.needsAudioPermission)
@@ -208,49 +209,49 @@ struct MenuBarView: View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
         let isRenaming = renamingIdentityKey == device.identityKey
 
-        return HStack(spacing: 10) {
-            // One hit target: name + trailing space up to the toggle.
-            // While renaming, the text field owns that region instead.
-            if isRenaming {
-                outputTitle(device, isFocused: isFocused)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
+        return ZStack {
+            if !isRenaming {
                 Button(action: onToggleExpand) {
-                    HStack(spacing: 0) {
-                        outputTitle(device, isFocused: isFocused)
-                        Spacer(minLength: 0)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: MenuChrome.textRowContentHeight)
-                    .contentShape(Rectangle())
+                    Color.clear
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel(device.name)
             }
 
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: {
-                        // Armed in config isn’t “on” if EQ can’t run (e.g. no audio permission).
-                        if device.isDefault, appState.needsAudioPermission {
-                            return false
-                        }
-                        return mapping.enabled
-                    },
-                    set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
+            HStack(spacing: 10) {
+                outputTitle(device, isFocused: isFocused)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: MenuChrome.textRowContentHeight)
+                    .allowsHitTesting(isRenaming)
+
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: {
+                            // Armed in config isn’t “on” if EQ can’t run (e.g. no audio permission).
+                            if device.isDefault, appState.needsAudioPermission {
+                                return false
+                            }
+                            return mapping.enabled
+                        },
+                        set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
+                    )
                 )
-            )
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .focusEffectDisabled()
-            .focusable(false)
-            .disabled(mapping.profileFilename == nil)
-            .tint(accent)
-            .layoutPriority(1)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .focusEffectDisabled()
+                .focusable(false)
+                .disabled(mapping.profileFilename == nil)
+                .tint(accent)
+                .layoutPriority(1)
+            }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, topPadding)
+            .padding(.bottom, MenuChrome.headerVerticalPadding)
         }
-        .padding(.horizontal, MenuChrome.contentInset)
-        .padding(.top, topPadding)
-        .padding(.bottom, MenuChrome.headerVerticalPadding)
         .contextMenu {
             Button("Rename") {
                 requestRename(device)
@@ -682,6 +683,83 @@ private final class RenameNSTextField: NSTextField {
     }
 }
 
+extension Notification.Name {
+    static let audiochromeDidEndTextEditing = Notification.Name("audiochromeDidEndTextEditing")
+}
+
+/// Clicking outside an editable field resigns first responder (clears caret + selection).
+struct EndEditingClickMonitor: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.attach(to: nsView)
+        context.coordinator.setEnabled(true)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    final class Coordinator {
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        func attach(to view: NSView) {
+            self.view = view
+        }
+
+        func setEnabled(_ enabled: Bool) {
+            if enabled {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                    guard let self else { return event }
+                    guard let panel = self.view?.window, event.window === panel else { return event }
+                    if self.isClickInEditableField(event) { return event }
+                    let responder = panel.firstResponder
+                    if responder != nil, !(responder is NSWindow) {
+                        panel.makeFirstResponder(nil)
+                        NotificationCenter.default.post(name: .audiochromeDidEndTextEditing, object: nil)
+                    }
+                    return event
+                }
+            } else {
+                teardown()
+            }
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func isClickInEditableField(_ event: NSEvent) -> Bool {
+            guard let content = event.window?.contentView else { return false }
+            guard let hit = content.hitTest(event.locationInWindow) else { return false }
+            var current: NSView? = hit
+            while let view = current {
+                if let field = view as? NSTextField {
+                    return field.isEditable && field.isEnabled
+                }
+                if view is NSTextView {
+                    return true
+                }
+                current = view.superview
+            }
+            return false
+        }
+    }
+}
+
 /// Commits an in-progress rename when the user clicks elsewhere in the menu panel.
 private struct RenameOutsideClickMonitor: NSViewRepresentable {
     var enabled: Bool
@@ -788,6 +866,9 @@ enum MenuChrome {
     static var bodyFont: Font {
         Font(NSFont.systemFont(ofSize: bodyFontSize, weight: .regular))
     }
+    static var mediumFont: Font {
+        Font(NSFont.systemFont(ofSize: bodyFontSize, weight: .medium))
+    }
 
     static let textRowContentHeight: CGFloat = 20
     static let textRowHeight: CGFloat = 28
@@ -796,8 +877,15 @@ enum MenuChrome {
 
     static let listIconSize: CGFloat = 18
     static let chevronSize: CGFloat = 10
-    /// Tall enough for 24pt vertical curve inset while keeping ~16pt of plot.
-    static let waveformHeight: CGFloat = 64
+    /// Intrinsic width of a regular `NSSwitch` (filter toggles, Save chip).
+    static let switchWidth: CGFloat = {
+        let control = NSSwitch()
+        control.controlSize = .regular
+        let width = control.intrinsicContentSize.width
+        return width > 0 ? width : 54
+    }()
+    /// Plot height; dB scale maps to this full height (2pt stroke inset).
+    static let waveformHeight: CGFloat = 128
 
     static var highlightInset: CGFloat {
         if #available(macOS 26, *) { return 8 }
@@ -864,7 +952,7 @@ private enum OutputEQPanelMetrics {
         if hasProfile {
             height += MenuChrome.waveformSpacing
                 + MenuChrome.waveformHeight
-                + MenuChrome.waveformBottomPadding
+                + MenuChrome.waveformSpacing
         }
         height += iconRowHeight
         return height
@@ -1057,7 +1145,7 @@ private struct OutputEQPanel: View {
                         .frame(height: MenuChrome.waveformHeight)
                         .padding(.horizontal, MenuChrome.contentInset)
                         .padding(.top, MenuChrome.waveformSpacing)
-                        .padding(.bottom, MenuChrome.waveformBottomPadding)
+                        .padding(.bottom, MenuChrome.waveformSpacing)
                     }
 
                     PlusCommandRow(title: "Create New Profile", action: openCreateEditor)
@@ -1199,9 +1287,9 @@ struct ProfileWaveformView: View {
     let color: Color
     @Environment(\.colorScheme) private var colorScheme
 
-    private static let verticalInset: CGFloat = 24
+    private static let verticalInset: CGFloat = 2
     private static let strokeWidth: CGFloat = 1.25
-    private static let defaultHalfRangeDB: Double = 10
+    private static let halfRangeDB: Double = EQProfile.waveformRangeDB / 2
     private static let underCurveTopOpacity: Double = 0.32
     private static let curveBlackOverlayOpacity: Double = 0.20
 
@@ -1229,16 +1317,20 @@ struct ProfileWaveformView: View {
                 return
             }
 
-            let half = max(Self.defaultHalfRangeDB, preview.halfRangeDB)
-            let lo = -half
-            let hi = half
             let magnitudesDB = preview.magnitudesDB
+            let half = Self.halfRangeDB
+            let minDB = magnitudesDB.min() ?? 0
+            let maxDB = magnitudesDB.max() ?? 0
+            let center = (minDB + maxDB) / 2
+            let lo = center - half
+            let hi = center + half
+            let span = max(hi - lo, 1)
 
             var path = Path()
             let last = magnitudesDB.count - 1
             for (i, db) in magnitudesDB.enumerated() {
                 let x = plot.minX + plot.width * CGFloat(i) / CGFloat(last)
-                let t = (db - lo) / (hi - lo)
+                let t = min(1, max(0, (db - lo) / span))
                 let y = plot.minY + plot.height * (1 - CGFloat(t))
                 if i == 0 {
                     path.move(to: CGPoint(x: x, y: y))

@@ -849,6 +849,9 @@ private struct MenuBarRoot: View {
             }
             .environmentObject(appState)
             .environmentObject(chrome)
+            .background {
+                EndEditingClickMonitor()
+            }
             .frame(width: MenuMetrics.width, alignment: .top)
             .fixedSize(horizontal: false, vertical: true)
             // Permission banner can appear while a system sheet is up; re-sync after layout

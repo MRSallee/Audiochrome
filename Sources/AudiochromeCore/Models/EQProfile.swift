@@ -51,7 +51,7 @@ public struct EQFilter: Equatable, Sendable {
             }
         }
 
-        public static let editorKinds: [Kind] = [.peaking, .lowShelf, .highShelf]
+        public static let editorKinds: [Kind] = [.lowShelf, .peaking, .highShelf]
 
         public var isEditorKind: Bool { Self.editorKinds.contains(self) }
 
@@ -119,19 +119,12 @@ public struct EQProfile: Equatable, Sendable {
         right ?? linked ?? left ?? ChannelEQ()
     }
 
-    /// Largest |gain| among enabled filters (used for waveform vertical scale).
-    public var maxAbsFilterGainDB: Double {
-        let channels = [linked, left, right].compactMap { $0 }
-        return channels
-            .flatMap(\.filters)
-            .filter(\.enabled)
-            .map { abs($0.gainDB) }
-            .max() ?? 0
-    }
+    /// Full vertical span of the EQ curve preview (dB). Window is centered on the curve, not 0 dB.
+    public static let waveformRangeDB: Double = 30
 
-    /// Waveform half-range in dB: ±10 by default, or ±max filter gain when larger.
+    /// Waveform half-range in dB (±15 → 30 dB full scale).
     public var waveformHalfRangeDB: Double {
-        max(10, maxAbsFilterGainDB)
+        Self.waveformRangeDB / 2
     }
 
     /// Default new-profile curve: one peaking band at 1 kHz / 0 dB / Q 1.
