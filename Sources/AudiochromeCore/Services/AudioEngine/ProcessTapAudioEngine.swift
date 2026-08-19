@@ -52,7 +52,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
 
     public init() {}
 
-    /// Smoothed peak magnitude of the EQ'd output (0…1). Safe to read from the main thread.
+    /// Smoothed peak of the *pre-EQ* tap (0…1). Safe to read from the main thread.
+    /// Driven from the incoming signal so auto-pregain / big boosts don’t freeze the menu-bar blob.
     public var outputLevel: Float {
         meterLock.lock()
         defer { meterLock.unlock() }
@@ -401,6 +402,10 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             }
         }
 
+        // Icon animation follows the incoming mix, not the EQ'd output — otherwise
+        // auto-pregain on a big boost (Giga Bass, etc.) drops the peak below the blob's floor.
+        engine.updateMeter(from: outBuffers)
+
         // Planar (one buffer per channel, common for aggregates) vs interleaved.
         let planar = outBuffers.count > 1 && outBuffers.allSatisfy { $0.mNumberChannels <= 1 }
         if planar {
@@ -423,11 +428,12 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             }
         }
 
-        engine.updateMeter(from: outBuffers)
+        let post = engine.peak(from: outBuffers)
+        engine.notePeakForWarmBypassRelease(post.peak, frames: post.frames)
         return noErr
     }
 
-    private func updateMeter(from buffers: UnsafeMutableAudioBufferListPointer) {
+    private func peak(from buffers: UnsafeMutableAudioBufferListPointer) -> (peak: Float, frames: Int) {
         var peak: Float = 0
         var frameHint = 0
         for buffer in buffers {
@@ -441,8 +447,13 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
                 if a > peak { peak = a }
             }
         }
+        return (peak, frameHint)
+    }
+
+    private func updateMeter(from buffers: UnsafeMutableAudioBufferListPointer) {
+        let sample = peak(from: buffers)
         // Soft knee so typical music (often <0.3 peak) still animates visibly.
-        let shaped = min(1, pow(peak * 1.8, 0.65))
+        let shaped = min(1, pow(sample.peak * 1.8, 0.65))
 
         meterLock.lock()
         if shaped > meterLevel {
@@ -452,8 +463,6 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             if meterLevel < 0.008 { meterLevel = 0 }
         }
         meterLock.unlock()
-
-        notePeakForWarmBypassRelease(peak, frames: frameHint)
     }
 
     /// While EQ is soft-off, tear down the tap after sustained silence so we don’t keep it forever.

@@ -7,6 +7,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var popoverChrome: PopoverChrome
+    @Environment(\.colorScheme) private var colorScheme
 
     /// 1 = system-default output’s EQ panel visible; 0 = collapsed (an inactive output is focused).
     @State private var activePanelProgress: CGFloat = 1
@@ -71,7 +72,7 @@ struct MenuBarView: View {
         return appState.colorHex(
             forProfile: filename,
             forIdentity: activeDevice?.identityKey
-        ).asHexColor
+        ).profileColor(.ui, scheme: colorScheme)
     }
 
     private var isActivePanelVisible: Bool {
@@ -100,7 +101,11 @@ struct MenuBarView: View {
                 }
 
                 if !unlistedDevices.isEmpty {
-                    Divider().padding(.horizontal, MenuChrome.dividerInset)
+                    // Grouped EQ panel already has a bottom rule; stacking another
+                    // divider on it doubles the line when no other-output rows sit between.
+                    if !otherDevices.isEmpty {
+                        Divider().padding(.horizontal, MenuChrome.dividerInset)
+                    }
                     otherDevicesDisclosure
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
                 } else if !otherDevices.isEmpty {
@@ -433,13 +438,14 @@ struct MenuBarView: View {
 
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
+        let otherProfiles = preferredOtherProfilesProgress(for: key)
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 0
                 activeOtherProfilesProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
-                inactiveOtherProfilesProgress = 0
+                inactiveOtherProfilesProgress = otherProfiles
                 colorPickerIdentityKey = nil
                 if renamingIdentityKey != key {
                     endRenameIfNeeded()
@@ -450,7 +456,7 @@ struct MenuBarView: View {
             activeOtherProfilesProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
-            inactiveOtherProfilesProgress = 0
+            inactiveOtherProfilesProgress = otherProfiles
             colorPickerIdentityKey = nil
             if renamingIdentityKey != key {
                 endRenameIfNeeded()
@@ -460,10 +466,11 @@ struct MenuBarView: View {
 
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
+        let otherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
-                activeOtherProfilesProgress = 0
+                activeOtherProfilesProgress = otherProfiles
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
                 colorPickerIdentityKey = nil
@@ -478,7 +485,7 @@ struct MenuBarView: View {
             }
         } else {
             activePanelProgress = 1
-            activeOtherProfilesProgress = 0
+            activeOtherProfilesProgress = otherProfiles
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
             inactiveOtherProfilesProgress = 0
@@ -487,6 +494,11 @@ struct MenuBarView: View {
                 endRenameIfNeeded()
             }
         }
+    }
+
+    /// No Profile → Available Profiles starts open so picking an EQ is one less click.
+    private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
+        appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
     private func pinOtherDevicesWithProfiles(reset: Bool) {
@@ -944,7 +956,7 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// “Active Profile” header + row + optional waveform + Create New Profile.
+    /// “Active Profile” header + row + optional waveform.
     static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
         var height = MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
@@ -954,7 +966,6 @@ private enum OutputEQPanelMetrics {
                 + MenuChrome.waveformHeight
                 + MenuChrome.waveformSpacing
         }
-        height += iconRowHeight
         return height
     }
 
@@ -1014,6 +1025,7 @@ private enum OutputEQPanelMetrics {
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // Available Profiles header
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
+        height += disclosureRowSpacing + iconRowHeight // Create New Profile
         height += MenuChrome.otherProfilesSectionVerticalPadding
         return height
     }
@@ -1022,6 +1034,7 @@ private enum OutputEQPanelMetrics {
 private struct OutputEQPanel: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var popoverChrome: PopoverChrome
+    @Environment(\.colorScheme) private var colorScheme
     let identityKey: String
     @Binding var otherProfilesProgress: CGFloat
     @Binding var colorPickerIdentityKey: String?
@@ -1056,7 +1069,8 @@ private struct OutputEQPanel: View {
         guard let filename = mapping.profileFilename else {
             return Color(nsColor: .systemGray)
         }
-        return appState.colorHex(forProfile: filename, forIdentity: identityKey).asHexColor
+        return appState.colorHex(forProfile: filename, forIdentity: identityKey)
+            .profileColor(.ui, scheme: colorScheme)
     }
 
     private var showColorPicker: Binding<Bool> {
@@ -1078,6 +1092,23 @@ private struct OutputEQPanel: View {
                 .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
+        }
+        .onAppear {
+            if !hasProfile {
+                otherProfilesProgress = 1
+            }
+        }
+        .onChange(of: mapping.profileFilename) { _, filename in
+            if filename == nil {
+                guard otherProfilesProgress < 0.5 else { return }
+                popoverChrome.animatingDisclosure {
+                    otherProfilesProgress = 1
+                }
+            } else if otherProfilesProgress > 0.5 {
+                popoverChrome.animatingDisclosure {
+                    otherProfilesProgress = 0
+                }
+            }
         }
         .background {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1133,22 +1164,21 @@ private struct OutputEQPanel: View {
                     ) {
                         guard hasProfile else { return }
                         popoverChrome.animatingDisclosure {
+                            otherProfilesProgress = 1
                             appState.setProfile(forIdentity: identityKey, filename: nil)
                         }
                     }
 
-                    if hasProfile {
+                    if hasProfile, let filename = mapping.profileFilename {
                         ProfileWaveformView(
                             preview: appState.eqFrequencyResponse(forIdentity: identityKey),
-                            color: accent
+                            colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey)
                         )
                         .frame(height: MenuChrome.waveformHeight)
                         .padding(.horizontal, MenuChrome.contentInset)
                         .padding(.top, MenuChrome.waveformSpacing)
                         .padding(.bottom, MenuChrome.waveformSpacing)
                     }
-
-                    PlusCommandRow(title: "Create New Profile", action: openCreateEditor)
                 }
                 .frame(height: blockHeight, alignment: .top)
             }
@@ -1211,12 +1241,13 @@ private struct OutputEQPanel: View {
                                     color: appState.colorHex(
                                         forProfile: profile.filename,
                                         forIdentity: identityKey
-                                    ).asHexColor
+                                    ).profileColor(.ui, scheme: colorScheme)
                                 ) {
-                                    popoverChrome.animatingDisclosure {
-                                        appState.setProfile(forIdentity: identityKey, filename: profile.filename)
-                                    }
-                                } onDelete: {
+                        popoverChrome.animatingDisclosure {
+                            otherProfilesProgress = 0
+                            appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                        }
+                    } onDelete: {
                                     popoverChrome.animatingDisclosure {
                                         appState.deleteProfile(profile, forIdentity: identityKey)
                                     }
@@ -1237,6 +1268,9 @@ private struct OutputEQPanel: View {
             .clipped()
             .opacity(otherProfilesProgress)
             .allowsHitTesting(otherProfilesProgress > 0.98)
+
+            PlusCommandRow(title: "Create New Profile", action: openCreateEditor)
+                .padding(.top, OutputEQPanelMetrics.disclosureRowSpacing)
         }
     }
 
@@ -1251,7 +1285,7 @@ private struct OutputEQPanel: View {
                     .fill(hex.asHexColor)
                     .frame(width: 18, height: 18)
                     .overlay {
-                        if selectedHex.lowercased() == hex.lowercased() {
+                        if ProfileColorPalette.canonical(selectedHex) == hex {
                             Circle().strokeBorder(.primary, lineWidth: 1.5)
                         }
                     }
@@ -1284,14 +1318,22 @@ private struct OutputEQPanel: View {
 
 struct ProfileWaveformView: View {
     let preview: EQFrequencyResponsePreview?
-    let color: Color
+    let colorHex: String
     @Environment(\.colorScheme) private var colorScheme
+
+    private var color: Color {
+        colorHex.profileColor(.curve, scheme: colorScheme)
+    }
 
     private static let verticalInset: CGFloat = 2
     private static let strokeWidth: CGFloat = 1.25
     private static let halfRangeDB: Double = EQProfile.waveformRangeDB / 2
     private static let underCurveTopOpacity: Double = 0.32
     private static let curveBlackOverlayOpacity: Double = 0.20
+    private static let freqMinHz: Double = 20
+    private static let freqMaxHz: Double = 20_000
+    private static let gridLineWidth: CGFloat = 1
+    private static let gridOpacity: Double = 0.22
 
     var body: some View {
         Canvas { context, size in
@@ -1309,6 +1351,7 @@ struct ProfileWaveformView: View {
             )
 
             guard let preview, preview.magnitudesDB.count >= 2 else {
+                Self.strokeGrid(&context, plot: plot, color: color)
                 var flat = Path()
                 let y = plot.midY
                 flat.move(to: CGPoint(x: plot.minX, y: y))
@@ -1355,6 +1398,8 @@ struct ProfileWaveformView: View {
                 )
             )
 
+            Self.strokeGrid(&context, plot: plot, color: color)
+
             // Profile color with a 20% black overlay.
             context.stroke(path, with: .color(color), style: style)
             context.stroke(path, with: .color(Color.black.opacity(Self.curveBlackOverlayOpacity)), style: style)
@@ -1367,6 +1412,37 @@ struct ProfileWaveformView: View {
         // Glass re-blends translucent pixels live; bake so the fade + line stay as authored.
         .drawingGroup()
         .accessibilityLabel("EQ frequency response")
+    }
+
+    /// Vertical log-frequency ticks: 1…9 × 10ⁿ Hz, matching a 20 Hz–20 kHz audio chart.
+    private static func strokeGrid(_ context: inout GraphicsContext, plot: CGRect, color: Color) {
+        let style = StrokeStyle(lineWidth: gridLineWidth, lineCap: .butt)
+        let logSpan = log(freqMaxHz / freqMinHz)
+        let edge: CGFloat = 0.75
+        let shading = GraphicsContext.Shading.linearGradient(
+            Gradient(colors: [
+                color.opacity(0),
+                color.opacity(gridOpacity),
+            ]),
+            startPoint: CGPoint(x: plot.midX, y: plot.minY),
+            endPoint: CGPoint(x: plot.midX, y: plot.maxY)
+        )
+
+        var decade = 10.0
+        while decade < freqMaxHz * 10 {
+            for multiplier in 1...9 {
+                let hz = Double(multiplier) * decade
+                guard hz > freqMinHz, hz < freqMaxHz else { continue }
+                let t = log(hz / freqMinHz) / logSpan
+                let x = plot.minX + plot.width * CGFloat(t)
+                guard x > plot.minX + edge, x < plot.maxX - edge else { continue }
+                var line = Path()
+                line.move(to: CGPoint(x: x, y: plot.minY))
+                line.addLine(to: CGPoint(x: x, y: plot.maxY))
+                context.stroke(line, with: shading, style: style)
+            }
+            decade *= 10
+        }
     }
 }
 

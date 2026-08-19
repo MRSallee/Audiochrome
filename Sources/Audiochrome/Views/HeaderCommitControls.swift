@@ -35,9 +35,6 @@ struct HeaderCommitControls: View {
                     // Fully clear skips hit-testing; a hair of alpha keeps the chip clickable.
                     backShape.fill(Color.white.opacity(0.001))
                 }
-                .overlay {
-                    backShape.stroke(Color.primary.opacity(Metrics.chromeOpacity), lineWidth: 1)
-                }
                 .contentShape(backShape)
             }
             .buttonStyle(.plain)

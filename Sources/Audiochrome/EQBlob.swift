@@ -62,7 +62,7 @@ enum EQBlob {
         center: CGPoint,
         radius: CGFloat,
         level: CGFloat,
-        phase: CGFloat,
+        morph: EQBlobMorph = .rest,
         steps: Int = 72,
         yIncreasesUpward: Bool = true
     ) -> [CGPoint] {
@@ -80,16 +80,23 @@ enum EQBlob {
             }
         }
 
-        let p = Double(phase)
+        let p0 = Double(morph.p0)
+        let p1 = Double(morph.p1)
+        let p2 = Double(morph.p2)
+        let p3 = Double(morph.p3)
+        let w0 = Double(morph.w0)
+        let w1 = Double(morph.w1)
+        let w2 = Double(morph.w2)
+        let w3 = Double(morph.w3)
         var result: [CGPoint] = []
         result.reserveCapacity(steps + 1)
         for i in 0...steps {
             let t = Double(i) / Double(steps) * Double.pi * 2
             let edge =
-                0.42 * sin(6 * t + p) +
-                0.28 * sin(11 * t - p * 1.4) +
-                0.18 * sin(17 * t + p * 0.6) +
-                0.12 * sin(3 * t + p * 2.2)
+                0.42 * w0 * sin(6 * t + p0) +
+                0.28 * w1 * sin(11 * t + p1) +
+                0.18 * w2 * sin(17 * t + p2) +
+                0.12 * w3 * sin(3 * t + p3)
             let r = radius * (1 + Double(wobble) * 0.32 * edge)
             result.append(CGPoint(
                 x: center.x + CGFloat(cos(t) * r),
@@ -104,13 +111,13 @@ enum EQBlob {
         center: CGPoint,
         radius: CGFloat,
         level: CGFloat,
-        phase: CGFloat
+        morph: EQBlobMorph = .rest
     ) -> NSBezierPath {
         let pts = points(
             center: center,
             radius: radius,
             level: level,
-            phase: phase,
+            morph: morph,
             yIncreasesUpward: true
         )
         let path = NSBezierPath()
@@ -130,14 +137,14 @@ enum EQBlob {
         center: CGPoint,
         radius: CGFloat,
         level: CGFloat,
-        phase: CGFloat
+        morph: EQBlobMorph = .rest
     ) -> Path {
         var path = Path()
         let pts = points(
             center: center,
             radius: radius,
             level: level,
-            phase: phase,
+            morph: morph,
             yIncreasesUpward: false
         )
         guard let first = pts.first else { return path }
@@ -155,25 +162,87 @@ enum EQBlob {
     }
 }
 
+/// Independent harmonic phases and mixes. Restores the logo mix when all weights are 1.
+struct EQBlobMorph: Equatable {
+    var p0: CGFloat = 0
+    var p1: CGFloat = 0
+    var p2: CGFloat = 0
+    var p3: CGFloat = 0
+    var w0: CGFloat = 1
+    var w1: CGFloat = 1
+    var w2: CGFloat = 1
+    var w3: CGFloat = 1
+
+    static let rest = EQBlobMorph()
+}
+
 /// Single motion clock for the menu-bar icon and Active Profile swatch.
 @MainActor
 final class EQBlobMotion: ObservableObject {
     static let shared = EQBlobMotion()
 
     @Published private(set) var level: CGFloat = 0
-    @Published private(set) var phase: CGFloat = 0
+    @Published private(set) var morph = EQBlobMorph.rest
 
     private var envelope: CGFloat = 0
+    private var mixTarget = (CGFloat(1), CGFloat(1), CGFloat(1), CGFloat(1))
+
+    /// Slow incommensurate drift (rad/sec) — morphs the edge without spinning the whole ring.
+    private static let drift: (CGFloat, CGFloat, CGFloat, CGFloat) = (0.37, -0.23, 0.58, -0.16)
+    private static let mixEase: CGFloat = 0.16
+    private static let mixReturn: CGFloat = 0.025
+    private static let attackKick: CGFloat = 0.05
 
     func reset() {
         envelope = 0
         level = 0
-        phase = 0
+        morph = .rest
+        mixTarget = (1, 1, 1, 1)
     }
 
     func tick(rawLevel: CGFloat) {
+        let previous = envelope
         envelope = EQBlob.advanceEnvelope(previous: envelope, rawLevel: rawLevel)
         level = envelope
-        phase += EQBlob.phaseStep(level: envelope)
+
+        let dt = 1 / EQBlob.animationFrameRate
+        let attack = max(0, envelope - previous)
+
+        var next = morph
+        next.p0 += Self.drift.0 * dt
+        next.p1 += Self.drift.1 * dt
+        next.p2 += Self.drift.2 * dt
+        next.p3 += Self.drift.3 * dt
+
+        if attack > Self.attackKick {
+            let kick = min(1, (attack - Self.attackKick) * 2.8)
+            next.p0 += kick * CGFloat.random(in: -1.15...1.15)
+            next.p1 += kick * CGFloat.random(in: -1.15...1.15)
+            next.p2 += kick * CGFloat.random(in: -1.15...1.15)
+            next.p3 += kick * CGFloat.random(in: -1.15...1.15)
+            mixTarget = (
+                CGFloat.random(in: 0.30...1.30),
+                CGFloat.random(in: 0.30...1.30),
+                CGFloat.random(in: 0.30...1.30),
+                CGFloat.random(in: 0.30...1.30)
+            )
+        }
+
+        next.w0 += (mixTarget.0 - next.w0) * Self.mixEase
+        next.w1 += (mixTarget.1 - next.w1) * Self.mixEase
+        next.w2 += (mixTarget.2 - next.w2) * Self.mixEase
+        next.w3 += (mixTarget.3 - next.w3) * Self.mixEase
+
+        mixTarget.0 += (1 - mixTarget.0) * Self.mixReturn
+        mixTarget.1 += (1 - mixTarget.1) * Self.mixReturn
+        mixTarget.2 += (1 - mixTarget.2) * Self.mixReturn
+        mixTarget.3 += (1 - mixTarget.3) * Self.mixReturn
+
+        let tau = 2 * CGFloat.pi
+        next.p0 = next.p0.truncatingRemainder(dividingBy: tau)
+        next.p1 = next.p1.truncatingRemainder(dividingBy: tau)
+        next.p2 = next.p2.truncatingRemainder(dividingBy: tau)
+        next.p3 = next.p3.truncatingRemainder(dividingBy: tau)
+        morph = next
     }
 }

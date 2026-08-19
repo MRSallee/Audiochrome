@@ -5,6 +5,7 @@ import SwiftUI
 struct ProfileEditorView: View {
     @ObservedObject var appState: AppState
     @EnvironmentObject private var popoverChrome: PopoverChrome
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showColorPicker = false
     @State private var isEditingName = false
@@ -51,8 +52,8 @@ struct ProfileEditorView: View {
 
             MenuGroupedSection {
                 ProfileWaveformView(
-                    preview: appState.eqFrequencyResponse(forIdentity: draft.identityKey),
-                    color: draft.colorHex.asHexColor
+                    preview: appState.eqFrequencyResponse(for: draft),
+                    colorHex: draft.colorHex
                 )
                 .frame(height: MenuChrome.waveformHeight)
                 .padding(.horizontal, MenuChrome.contentInset)
@@ -96,7 +97,7 @@ struct ProfileEditorView: View {
                 showColorPicker = true
             } label: {
                 Circle()
-                    .fill(draft.colorHex.asHexColor)
+                    .fill(draft.colorHex.profileColor(.ui, scheme: colorScheme))
                     .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
             }
             .buttonStyle(.plain)
@@ -107,7 +108,7 @@ struct ProfileEditorView: View {
                             .fill(hex.asHexColor)
                             .frame(width: 18, height: 18)
                             .overlay {
-                                if draft.colorHex.lowercased() == hex.lowercased() {
+                                if ProfileColorPalette.canonical(draft.colorHex) == hex {
                                     Circle().strokeBorder(.primary, lineWidth: 1.5)
                                 }
                             }
@@ -197,11 +198,11 @@ struct ProfileEditorView: View {
                         Divider().padding(.horizontal, MenuChrome.dividerInset)
                     }
                     VStack(alignment: .leading, spacing: 0) {
-                        filterHeader(band, expanded: expanded, accent: draft.colorHex.asHexColor)
+                        filterHeader(band, expanded: expanded, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
                             .contextMenu { filterDeleteMenu(band) }
                         if expanded {
                             MenuGroupedSection {
-                                expandedFilterControls(band, accent: draft.colorHex.asHexColor)
+                                expandedFilterControls(band, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
                             }
                             .contextMenu { filterDeleteMenu(band) }
                         }

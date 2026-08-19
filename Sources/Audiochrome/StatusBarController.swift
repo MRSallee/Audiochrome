@@ -282,12 +282,14 @@ final class StatusBarController: NSObject, ObservableObject {
         let appearance = menuBarAppearance(for: button)
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
         let motion = EQBlobMotion.shared
+        let hex = appState.activeProfileColorHex
+        let darkBar = StatusIconImage.isDark(appearance)
+        let paint = hex.map { ProfileColorPalette.nsColor($0, role: .menuBar, dark: darkBar) }
         button?.image = StatusIconImage.make(
-            color: nsColor(from: appState.activeProfileColor),
+            color: paint ?? .black,
             isEngaged: appState.isEQEngaged,
-            appearance: appearance,
             level: animate ? motion.level : 0,
-            phase: animate ? motion.phase : 0
+            morph: animate ? motion.morph : .rest
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
         if isPresented {
@@ -499,10 +501,6 @@ final class StatusBarController: NSObject, ObservableObject {
         let screenRect = window.convertToScreen(rectInWindow)
         return screenRect.insetBy(dx: -4, dy: -4).contains(mouse)
     }
-
-    private func nsColor(from color: Color) -> NSColor {
-        NSColor(color)
-    }
 }
 
 final class StatusMenuPanel: NSPanel {
@@ -521,9 +519,8 @@ enum StatusIconImage {
     static func make(
         color: NSColor,
         isEngaged: Bool,
-        appearance: NSAppearance? = nil,
         level: CGFloat = 0,
-        phase: CGFloat = 0,
+        morph: EQBlobMorph = .rest,
         size: CGFloat = 18
     ) -> NSImage {
         let sizeValue = NSSize(width: size, height: size)
@@ -536,12 +533,8 @@ enum StatusIconImage {
         // Leave room for ring stroke so the animated edge isn’t clipped.
         let radius = min(drawRect.width, drawRect.height) / 2 * 0.78
 
-        let darkBar = isDark(appearance ?? NSApp.effectiveAppearance)
-        let paint: NSColor = isEngaged
-            ? contrastAdjusted(color, againstDarkBackground: darkBar)
-            : .black
-
-        let ring = EQBlob.bezierPath(center: center, radius: radius, level: level, phase: phase)
+        let paint: NSColor = isEngaged ? color : .black
+        let ring = EQBlob.bezierPath(center: center, radius: radius, level: level, morph: morph)
         let ringWidth = EQBlob.ringLineWidth(outerRadius: radius)
         let inner = NSBezierPath(ovalIn: EQBlob.innerCircleRect(center: center, outerRadius: radius))
 
@@ -557,25 +550,6 @@ enum StatusIconImage {
 
     static func isDark(_ appearance: NSAppearance) -> Bool {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-    }
-
-    private static func contrastAdjusted(_ color: NSColor, againstDarkBackground: Bool) -> NSColor {
-        let rgb = color.usingColorSpace(.deviceRGB) ?? color
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-
-        if againstDarkBackground {
-            b = max(b, 0.78)
-            s = min(1.0, max(s, 0.55))
-        } else {
-            b = min(b, 0.72)
-            if b > 0.9 { b = 0.62 }
-            s = min(1.0, max(s, 0.45))
-        }
-        return NSColor(hue: h, saturation: s, brightness: b, alpha: a)
     }
 }
 

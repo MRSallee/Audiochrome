@@ -348,13 +348,17 @@ public final class AppState: ObservableObject {
         objectWillChange.send()
     }
 
+    public var activeProfileColorHex: String? {
+        guard isEQEngaged, let mapping = activeMapping else { return nil }
+        return mapping.profileFilename.map { colorHex(forProfile: $0, forIdentity: activeMappingIdentityKey) }
+            ?? mapping.colorHex
+    }
+
     public var activeProfileColor: Color {
-        guard isEQEngaged, let mapping = activeMapping else {
+        guard let hex = activeProfileColorHex else {
             return Color(nsColor: .labelColor)
         }
-        let hex = mapping.profileFilename.map { colorHex(forProfile: $0, forIdentity: activeMappingIdentityKey) }
-            ?? mapping.colorHex
-        return Color(hex: hex) ?? .accentColor
+        return hex.asHexColor
     }
 
     public func refreshAll() {
@@ -792,30 +796,26 @@ public final class AppState: ObservableObject {
         return eqFrequencyResponse(forIdentity: key, pointCount: pointCount)
     }
 
-    /// Log-spaced EQ magnitude curve (dB) for any output’s selected profile.
+    /// Saved/active profile curve for an output. Ignores an open editor draft so the home plot stays put.
     public func eqFrequencyResponse(forIdentity identityKey: String, pointCount: Int = 96) -> EQFrequencyResponsePreview? {
         let key = mappingIdentityKey(for: identityKey)
-        if let draft = profileEditor, mappingIdentityKey(for: draft.identityKey) == key {
-            let profile = draft.eqProfile
-            let sampleRate = predictedCurveSampleRate()
-            return EQFrequencyResponsePreview(
-                magnitudesDB: EQProcessor.frequencyResponseCurve(
-                    for: profile,
-                    sampleRate: sampleRate,
-                    pointCount: pointCount
-                ),
-                halfRangeDB: profile.waveformHalfRangeDB
-            )
-        }
         let mapping = config.mapping(forIdentity: key)
         guard let filename = mapping.profileFilename else { return nil }
         let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else { return nil }
-        let sampleRate = predictedCurveSampleRate()
-        return EQFrequencyResponsePreview(
+        return frequencyResponsePreview(for: profile, pointCount: pointCount)
+    }
+
+    /// Editor curve for the in-progress draft (create or edit).
+    public func eqFrequencyResponse(for draft: ProfileEditorDraft, pointCount: Int = 96) -> EQFrequencyResponsePreview {
+        frequencyResponsePreview(for: draft.eqProfile, pointCount: pointCount)
+    }
+
+    private func frequencyResponsePreview(for profile: EQProfile, pointCount: Int) -> EQFrequencyResponsePreview {
+        EQFrequencyResponsePreview(
             magnitudesDB: EQProcessor.frequencyResponseCurve(
                 for: profile,
-                sampleRate: sampleRate,
+                sampleRate: predictedCurveSampleRate(),
                 pointCount: pointCount
             ),
             halfRangeDB: profile.waveformHalfRangeDB

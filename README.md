@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.3.0** — Slide-over Settings and PEQ editor, with the last screen restored when the menu reopens.  
+> **v1.4.0** — Profile color ramps, a pre-EQ menu-bar meter with morphing spikes, and a log-frequency grid on the plot.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
