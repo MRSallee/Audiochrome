@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.4.1** — Change Folder starts at Documents when the saved folder is nested, with a folder icon; Available Profiles stays open after a pick.  
+> **v1.4.2** — Settings can export, import, and reset this Mac’s configuration; EQ on Squiglink opens the sandbox with the draft’s filters.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

@@ -1482,6 +1482,9 @@ enum ControlCenterTrailing {
 enum ControlCenterLeading {
     case none
     case folder
+    case fileExport
+    case fileImport
+    case restore
 }
 
 enum ControlCenterRowStyle {
@@ -1680,6 +1683,15 @@ struct ControlCenterRow: View {
                 case .folder:
                     FolderOpenIcon()
                         .foregroundStyle(.primary)
+                case .fileExport:
+                    FileExportIcon()
+                        .foregroundStyle(.primary)
+                case .fileImport:
+                    FileImportIcon()
+                        .foregroundStyle(.primary)
+                case .restore:
+                    RestoreIcon()
+                        .foregroundStyle(.primary)
                 }
 
                 Text(title)
@@ -1792,6 +1804,125 @@ private struct FolderOpenShape: Shape {
         path.addLine(to: pt(19, 7))
         path.addQuadCurve(to: pt(21, 9), control: pt(21, 7))
         path.addLine(to: pt(21, 11))
+        return path
+    }
+}
+
+/// Tabler `fold-down` (24×24), drawn at profile-swatch size.
+private struct FileExportIcon: View {
+    var body: some View {
+        FileExportShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+    }
+}
+
+private struct FileExportShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        path.move(to: pt(12, 11))
+        path.addLine(to: pt(12, 19))
+        path.addLine(to: pt(15, 16))
+        path.move(to: pt(9, 16))
+        path.addLine(to: pt(12, 19))
+
+        path.move(to: pt(9, 7))
+        path.addLine(to: pt(10, 7))
+        path.move(to: pt(14, 7))
+        path.addLine(to: pt(15, 7))
+        path.move(to: pt(19, 7))
+        path.addLine(to: pt(20, 7))
+        path.move(to: pt(4, 7))
+        path.addLine(to: pt(5, 7))
+        return path
+    }
+}
+
+/// Tabler `fold-up` (24×24), drawn at profile-swatch size.
+private struct FileImportIcon: View {
+    var body: some View {
+        FileImportShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+    }
+}
+
+private struct FileImportShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        path.move(to: pt(12, 13))
+        path.addLine(to: pt(12, 5))
+        path.addLine(to: pt(9, 8))
+        path.move(to: pt(15, 8))
+        path.addLine(to: pt(12, 5))
+
+        path.move(to: pt(9, 17))
+        path.addLine(to: pt(10, 17))
+        path.move(to: pt(14, 17))
+        path.addLine(to: pt(15, 17))
+        path.move(to: pt(19, 17))
+        path.addLine(to: pt(20, 17))
+        path.move(to: pt(4, 17))
+        path.addLine(to: pt(5, 17))
+        return path
+    }
+}
+
+/// Tabler `restore` (24×24), drawn at profile-swatch size.
+private struct RestoreIcon: View {
+    var body: some View {
+        RestoreShape()
+            .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+    }
+}
+
+private struct RestoreShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        let center = pt(12, 12)
+        let radius = 9 * min(sx, sy)
+        func angle(to point: CGPoint) -> Angle {
+            Angle(radians: atan2(point.y - center.y, point.x - center.x))
+        }
+
+        var path = Path()
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: angle(to: pt(3.06, 13)),
+            endAngle: angle(to: pt(3.55, 8.913)),
+            clockwise: true
+        )
+
+        path.move(to: pt(3, 4.001))
+        path.addLine(to: pt(3, 9.001))
+        path.addLine(to: pt(8, 9.001))
+
+        let dot = 1 * min(sx, sy)
+        path.addEllipse(in: CGRect(
+            x: center.x - dot,
+            y: center.y - dot,
+            width: dot * 2,
+            height: dot * 2
+        ))
         return path
     }
 }

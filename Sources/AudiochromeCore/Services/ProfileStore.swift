@@ -195,13 +195,53 @@ public final class ConfigStore: @unchecked Sendable {
         guard let data = try? Data(contentsOf: fileURL) else {
             return AppConfig()
         }
-        return (try? JSONDecoder().decode(AppConfig.self, from: data)) ?? AppConfig()
+        return (try? Self.decode(data)) ?? AppConfig()
     }
 
     public func save(_ config: AppConfig) {
+        guard let data = try? Self.encode(config) else { return }
+        try? data.write(to: fileURL, options: [.atomic])
+    }
+
+    public static func encode(_ config: AppConfig) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(config) else { return }
-        try? data.write(to: fileURL, options: [.atomic])
+        return try encoder.encode(config)
+    }
+
+    public static func decode(_ data: Data) throws -> AppConfig {
+        try JSONDecoder().decode(AppConfig.self, from: data)
+    }
+
+    public func export(_ config: AppConfig, to url: URL) throws {
+        try Self.encode(config).write(to: url, options: [.atomic])
+    }
+
+    public static func load(from url: URL) throws -> AppConfig {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw ConfigStoreError.unreadableFile
+        }
+        do {
+            return try decode(data)
+        } catch {
+            throw ConfigStoreError.invalidFile
+        }
+    }
+}
+
+public enum ConfigStoreError: LocalizedError {
+    case unreadableFile
+    case invalidFile
+
+    public var errorDescription: String? {
+        switch self {
+        case .unreadableFile:
+            return "The configuration file could not be read."
+        case .invalidFile:
+            return "This file isn’t a valid Audiochrome configuration snapshot."
+        }
     }
 }

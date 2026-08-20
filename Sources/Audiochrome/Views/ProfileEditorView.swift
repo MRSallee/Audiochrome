@@ -83,9 +83,7 @@ struct ProfileEditorView: View {
                 .padding(.bottom, MenuChrome.waveformSpacing)
 
             ControlCenterRow(title: "EQ on Squiglink", style: .command, trailing: .externalLink) {
-                if let url = URL(string: "https://squig.link/") {
-                    NSWorkspace.shared.open(url)
-                }
+                NSWorkspace.shared.open(SquiglinkURL.editorURL(filters: draft.bands.map(\.filter)))
             }
             .padding(.bottom, MenuChrome.menuPadding)
         }

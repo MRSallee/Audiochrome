@@ -79,6 +79,66 @@ struct SmokeMain {
         let freshRoundTrip = try ProfileParser.parse(ProfileWriter.apoText(for: fresh), name: fresh.name)
         check("new profile writes", freshRoundTrip.linked?.filters.first?.kind == .peaking)
 
+        check(
+            "squig empty is sandbox",
+            SquiglinkURL.editorURL(filters: []).absoluteString
+                == "https://squig.link/?eqModel=_EQ_Sandbox"
+        )
+        let emptyPK = EQFilter(enabled: true, kind: .peaking, frequencyHz: 0, gainDB: 0, q: 0)
+        let squigExample = [
+            EQFilter(enabled: true, kind: .lowShelf, frequencyHz: 196, gainDB: 7.8, q: 1),
+            emptyPK, emptyPK, emptyPK, emptyPK
+        ]
+        check(
+            "squig eqFilters v2 example",
+            SquiglinkURL.editorURL(filters: squigExample).absoluteString
+                == "https://squig.link/?eqModel=_EQ_Sandbox&eqFilters=djI7MCwxLDE5NiwxLDcuODswLDAsMCwwLDA7MCwwLDAsMCwwOzAsMCwwLDAsMDswLDAsMCwwLDA"
+        )
+        check(
+            "squig skips hidden LP",
+            SquiglinkURL.editorURL(
+                filters: [EQFilter(enabled: true, kind: .lowPass, frequencyHz: 80, gainDB: 0, q: 0.7)]
+            ).absoluteString == "https://squig.link/?eqModel=_EQ_Sandbox"
+        )
+
+        var snapshot = AppConfig()
+        snapshot.openAtLogin = true
+        snapshot.animatedMenuBarIcon = false
+        snapshot.activeEQReminders = false
+        snapshot.customEQPerDevice = true
+        snapshot.profileColors = ["Oratory.txt": "#FF00AA"]
+        snapshot.knownOutputs["uid-1"] = KnownOutput(
+            identityKey: "uid-1",
+            uid: "uid-1",
+            name: "Speakers",
+            displayName: "Desk",
+            transport: "Built-in",
+            lastSeen: Date(timeIntervalSinceReferenceDate: 100)
+        )
+        snapshot.outputs["uid-1"] = OutputMapping(
+            enabled: true,
+            profileFilename: "Oratory.txt",
+            colorHex: "#FF00AA",
+            profilesDirectoryPath: "/tmp/eq"
+        )
+        let encoded = try ConfigStore.encode(snapshot)
+        let decoded = try ConfigStore.decode(encoded)
+        check("config encode round-trip", decoded == snapshot)
+        check("config export includes colors", decoded.profileColors["Oratory.txt"] == "#FF00AA")
+        check("config export includes folder", decoded.outputs["uid-1"]?.profilesDirectoryPath == "/tmp/eq")
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("audiochrome-config-smoke.json")
+        try encoded.write(to: tmp)
+        let fromFile = try ConfigStore.load(from: tmp)
+        check("config file round-trip", fromFile == snapshot)
+        try? FileManager.default.removeItem(at: tmp)
+        do {
+            _ = try ConfigStore.decode(Data("{not-a-config".utf8))
+            check("invalid config throws", false)
+        } catch {
+            check("invalid config throws", true)
+        }
+
         // Device enumeration should not crash.
         let devices = AudioDeviceService().outputDevices()
         check("device list loads", true)

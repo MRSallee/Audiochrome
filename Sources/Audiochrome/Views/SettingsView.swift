@@ -1,6 +1,7 @@
 import AppKit
 import AudiochromeCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
@@ -8,6 +9,8 @@ struct SettingsView: View {
 
     @State private var configSnapshot: AppConfig?
     @State private var didCommit = false
+    /// 1 = Manage Configuration open. Always starts expanded when Settings appears.
+    @State private var manageConfigurationProgress: CGFloat = 1
 
     private enum SampleRateChoice: String, CaseIterable, Identifiable {
         case auto
@@ -100,6 +103,9 @@ struct SettingsView: View {
                 }
             }
 
+            manageConfigurationSection
+                .padding(.top, MenuChrome.sectionTopPadding)
+
             AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight, version: Self.versionLabel)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MenuChrome.contentInset)
@@ -111,6 +117,7 @@ struct SettingsView: View {
             appState.syncOpenAtLoginFromSystem()
             configSnapshot = appState.config
             didCommit = false
+            manageConfigurationProgress = 1
         }
         .onDisappear {
             if !didCommit {
@@ -123,6 +130,40 @@ struct SettingsView: View {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let trimmed = short?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? "v—" : "v\(trimmed)"
+    }
+
+    private var manageConfigurationSection: some View {
+        let rowSpacing: CGFloat = 2
+        let bodyHeight = 3 * MenuChrome.iconRowHeight + 2 * rowSpacing
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ControlCenterRow(
+                title: "Manage Configuration",
+                style: .disclosure,
+                trailing: manageConfigurationProgress > 0.5 ? .chevronDown : .chevronRight
+            ) {
+                let target: CGFloat = manageConfigurationProgress < 0.5 ? 1 : 0
+                popoverChrome.animatingDisclosure {
+                    manageConfigurationProgress = target
+                }
+            }
+
+            VStack(alignment: .leading, spacing: rowSpacing) {
+                ControlCenterRow(title: "Import", style: .command, leading: .fileImport) {
+                    importConfiguration()
+                }
+                ControlCenterRow(title: "Export", style: .command, leading: .fileExport) {
+                    exportConfiguration()
+                }
+                ControlCenterRow(title: "Reset", style: .command, leading: .restore) {
+                    resetConfiguration()
+                }
+            }
+            .frame(height: manageConfigurationProgress * bodyHeight, alignment: .top)
+            .clipped()
+            .opacity(manageConfigurationProgress)
+            .allowsHitTesting(manageConfigurationProgress > 0.98)
+        }
     }
 
     private func save() {
@@ -140,6 +181,94 @@ struct SettingsView: View {
         if let configSnapshot {
             appState.restoreConfig(configSnapshot)
         }
+    }
+
+    private var modalWindowLevel: NSWindow.Level {
+        NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+    }
+
+    /// Commit Settings so Cancel-on-disappear does not revert, then dismiss the menu for a system panel.
+    private func beginModalSession() {
+        didCommit = true
+        configSnapshot = appState.config
+        appState.onWillPresentModal?()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func exportConfiguration() {
+        let snapshot = appState.config
+        beginModalSession()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = "Audiochrome Configuration.json"
+        panel.message = "Save a snapshot of this Mac’s Audiochrome configuration. EQ profile files are not included."
+        panel.prompt = "Export"
+        panel.level = modalWindowLevel
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try appState.exportConfiguration(snapshot, to: url)
+        } catch {
+            presentAlert(title: "Couldn’t Export Configuration", message: error.localizedDescription)
+        }
+    }
+
+    private func importConfiguration() {
+        beginModalSession()
+        guard confirm(
+            title: "Import Audiochrome Configuration?",
+            message: "Import and replace all device names, folder and profile assignments, colors, and app settings.",
+            confirmTitle: "Import…"
+        ) else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.json]
+        panel.message = "Choose an Audiochrome configuration snapshot. EQ profile files are not imported."
+        panel.prompt = "Import"
+        panel.level = modalWindowLevel
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try appState.importConfiguration(from: url)
+            configSnapshot = appState.config
+        } catch {
+            presentAlert(title: "Couldn’t Import Configuration", message: error.localizedDescription)
+        }
+    }
+
+    private func resetConfiguration() {
+        beginModalSession()
+        guard confirm(
+            title: "Reset Audiochrome Configuration?",
+            message: "Forget all device names, folder and profile assignments, colors, and app settings. EQ profiles will not be deleted from your computer.",
+            confirmTitle: "Reset"
+        ) else { return }
+        appState.resetConfiguration()
+        configSnapshot = appState.config
+    }
+
+    private func confirm(title: String, message: String, confirmTitle: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "Cancel")
+        alert.window.level = modalWindowLevel
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func presentAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.window.level = modalWindowLevel
+        alert.runModal()
     }
 
     @ViewBuilder

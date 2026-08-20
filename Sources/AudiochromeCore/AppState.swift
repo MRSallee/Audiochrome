@@ -135,6 +135,21 @@ public final class AppState: ObservableObject {
         configStore.save(config)
     }
 
+    /// Writes a this-Mac snapshot of `config.json`. Does not include EQ profile files.
+    public func exportConfiguration(_ snapshot: AppConfig? = nil, to url: URL) throws {
+        try configStore.export(snapshot ?? config, to: url)
+    }
+
+    /// Replaces `config.json` with a snapshot. EQ profile files are not imported.
+    public func importConfiguration(from url: URL) throws {
+        replaceConfiguration(try ConfigStore.load(from: url))
+    }
+
+    /// Factory-default `config.json`. EQ profile files are not deleted. Live outputs are rediscovered.
+    public func resetConfiguration() {
+        replaceConfiguration(AppConfig())
+    }
+
     /// Restore a previously snapshotted config (Settings Cancel). Re-applies login item and engine as needed.
     public func restoreConfig(_ snapshot: AppConfig) {
         guard snapshot != config else { return }
@@ -152,6 +167,21 @@ public final class AppState: ObservableObject {
             forceEngineResync()
         }
         objectWillChange.send()
+    }
+
+    /// Replaces the whole config, saves first, then rediscovers live devices and resyncs the engine.
+    private func replaceConfiguration(_ incoming: AppConfig) {
+        var next = incoming
+        if !AppConfig.showEQAccuracyDebugSettings {
+            next.debugAudio = AudioEngineDebugOptions()
+        }
+        let loginEnabled = next.openAtLogin
+        config = next
+        configStore.save(config)
+        _ = LoginItem.setEnabled(loginEnabled)
+        audioEngine.debugOptions = next.debugAudio
+        refreshAll()
+        forceEngineResync()
     }
 
     /// Persists EQ accuracy debug knobs. Path-affecting changes restart the engine.
