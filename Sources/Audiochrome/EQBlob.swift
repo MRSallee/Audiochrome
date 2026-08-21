@@ -13,12 +13,22 @@ enum EQBlob {
     private static let phaseRateFromLevel: CGFloat = 16.5
     static let animationFrameRate: CGFloat = 30
 
-    /// Ignore steady low-level audio; only the part above this drives the ring.
-    private static let reactivityFloor: CGFloat = 0.32
+    /// Ignore steady low-level audio; only the part above this drives the pulse.
+    private static let reactivityFloor: CGFloat = 0.2
     /// Peak emphasis after gating (higher → calmer on mid levels, punchier on beats).
-    private static let reactivityGamma: CGFloat = 2.4
-    private static let envelopeAttack: CGFloat = 0.62
-    private static let envelopeRelease: CGFloat = 0.11
+    private static let reactivityGamma: CGFloat = 1.65
+    private static let envelopeAttack: CGFloat = 0.55
+    private static let envelopeRelease: CGFloat = 0.13
+    /// Slow baseline tracks sustained loudness so busy mixes don’t pin the disc at max.
+    private static let baselineFollow: CGFloat = 0.042
+    /// How hard excess-above-baseline is amplified into 0…1 pulse.
+    private static let punchGain: CGFloat = 2.2
+    /// Mild rising-edge boost (kept low — high values read as twitch).
+    private static let onsetGain: CGFloat = 1.35
+    private static let onsetFloor: CGFloat = 0.035
+    /// Final display smoother — quick enough for beats, soft enough to kill jitter.
+    private static let displayAttack: CGFloat = 0.42
+    private static let displayRelease: CGFloat = 0.16
 
     static func phaseRate(level: CGFloat) -> CGFloat {
         let amount = max(0, min(1, level))
@@ -38,13 +48,46 @@ enum EQBlob {
         return pow(gated, reactivityGamma)
     }
 
-    /// Fast attack / slower release so hits bloom then settle back to a circle.
+    /// Fast attack / slower release so hits bloom then settle.
     static func advanceEnvelope(previous: CGFloat, rawLevel: CGFloat) -> CGFloat {
         let target = reactivity(from: rawLevel)
         let coeff = target > previous ? envelopeAttack : envelopeRelease
         var next = previous + (target - previous) * coeff
         if next < 0.012 { next = 0 }
         return min(1, next)
+    }
+
+    /// Beat / voice pulse: expand on transients above the local loudness floor.
+    /// Sustained busy sections raise the baseline, so the disc keeps dipping between hits
+    /// instead of sitting at max.
+    static func advanceBeatPulse(
+        fast: inout CGFloat,
+        baseline: inout CGFloat,
+        previousFast: inout CGFloat,
+        display: inout CGFloat,
+        rawLevel: CGFloat
+    ) -> CGFloat {
+        let nextFast = advanceEnvelope(previous: fast, rawLevel: rawLevel)
+        baseline += (nextFast - baseline) * baselineFollow
+        if baseline < 0 { baseline = 0 }
+
+        let excess = max(0, nextFast - baseline)
+        let headroom = max(0.14, 1 - baseline * 0.7)
+        var pulse = min(1, (excess / headroom) * punchGain)
+
+        let onset = max(0, nextFast - previousFast)
+        if onset > onsetFloor {
+            pulse = min(1, pulse + onset * onsetGain)
+        }
+
+        previousFast = nextFast
+        fast = nextFast
+        if pulse < 0.025 { pulse = 0 }
+
+        let coeff = pulse > display ? displayAttack : displayRelease
+        display += (pulse - display) * coeff
+        if display < 0.02 { display = 0 }
+        return min(1, display)
     }
 
     static func innerRadius(outerRadius: CGFloat) -> CGFloat {
@@ -64,7 +107,9 @@ enum EQBlob {
         level: CGFloat,
         morph: EQBlobMorph = .rest,
         steps: Int = 72,
-        yIncreasesUpward: Bool = true
+        yIncreasesUpward: Bool = true,
+        /// How far the edge can deviate (0.32 ≈ old ring; ~0.55+ reads as Texture blob).
+        edgeAmplitude: CGFloat = 0.32
     ) -> [CGPoint] {
         let amount = max(0, min(1, level))
         let wobble = amount < 0.04 ? 0 : amount
@@ -93,11 +138,13 @@ enum EQBlob {
         for i in 0...steps {
             let t = Double(i) / Double(steps) * Double.pi * 2
             let edge =
-                0.42 * w0 * sin(6 * t + p0) +
-                0.28 * w1 * sin(11 * t + p1) +
-                0.18 * w2 * sin(17 * t + p2) +
-                0.12 * w3 * sin(3 * t + p3)
-            let r = radius * (1 + Double(wobble) * 0.32 * edge)
+                0.36 * w0 * sin(5 * t + p0) +
+                0.24 * w1 * sin(11 * t + p1) +
+                0.18 * w2 * sin(19 * t + p2) +
+                0.12 * w3 * sin(3 * t + p3) +
+                0.10 * sin(31 * t + p0 * 1.4) +
+                0.08 * sin(47 * t + p2 * 0.7)
+            let r = radius * (1 + Double(wobble) * Double(edgeAmplitude) * edge)
             result.append(CGPoint(
                 x: center.x + CGFloat(cos(t) * r),
                 y: center.y + ySign * CGFloat(sin(t) * r)
@@ -156,9 +203,73 @@ enum EQBlob {
         return path
     }
 
+    /// Filled organic disc for AppKit (ripple color / hole).
+    static func filledBezierPath(
+        center: CGPoint,
+        radius: CGFloat,
+        level: CGFloat,
+        morph: EQBlobMorph = .rest,
+        edgeAmplitude: CGFloat = 0.55
+    ) -> NSBezierPath {
+        let pts = points(
+            center: center,
+            radius: radius,
+            level: level,
+            morph: morph,
+            yIncreasesUpward: true,
+            edgeAmplitude: edgeAmplitude
+        )
+        let path = NSBezierPath()
+        guard let first = pts.first else { return path }
+        path.move(to: first)
+        for point in pts.dropFirst() {
+            path.line(to: point)
+        }
+        path.close()
+        return path
+    }
+
     static func innerCircleRect(center: CGPoint, outerRadius: CGFloat) -> CGRect {
         let r = innerRadius(outerRadius: outerRadius)
         return CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
+    }
+
+    /// Plate → stroke and stroke → disc share the same gap; stroke is relatively thick.
+    struct MarkLayout: Equatable {
+        var plateRadius: CGFloat
+        /// Stroke centerline radius.
+        var ringRadius: CGFloat
+        var ringWidth: CGFloat
+        var innerRadius: CGFloat
+
+        var innerRect: CGRect {
+            CGRect(
+                x: -innerRadius,
+                y: -innerRadius,
+                width: innerRadius * 2,
+                height: innerRadius * 2
+            )
+        }
+    }
+
+    static func markLayout(plateRadius: CGFloat) -> MarkLayout {
+        // Spec at 18pt plate: stroke outer 14×14, width 2, inner 6×6.
+        let scale = max(1, plateRadius) / 9
+        let strokeOuter = 7 * scale
+        let stroke = 2 * scale
+        let disc = 3 * scale
+        let ringCenter = strokeOuter - stroke / 2
+        return MarkLayout(
+            plateRadius: plateRadius,
+            ringRadius: ringCenter,
+            ringWidth: stroke,
+            innerRadius: disc
+        )
+    }
+
+    /// Stroke centerline radius for a mark inside a plate (animation path).
+    static func markOuterRadius(plateRadius: CGFloat) -> CGFloat {
+        markLayout(plateRadius: plateRadius).ringRadius
     }
 }
 
@@ -176,73 +287,108 @@ struct EQBlobMorph: Equatable {
     static let rest = EQBlobMorph()
 }
 
-/// Single motion clock for the menu-bar icon and Active Profile swatch.
+/// Single motion clock for the menu-bar icon.
 @MainActor
 final class EQBlobMotion: ObservableObject {
     static let shared = EQBlobMotion()
 
+    /// Beat detector strength 0…1 (for presence / triggers).
     @Published private(set) var level: CGFloat = 0
-    @Published private(set) var morph = EQBlobMorph.rest
+    /// Disc radius in points: idle 6 (12pt), dip 3 (6pt), peak 7 (14pt).
+    @Published private(set) var discRadius: CGFloat = 6
 
-    private var envelope: CGFloat = 0
-    private var mixTarget = (CGFloat(1), CGFloat(1), CGFloat(1), CGFloat(1))
+    private var fast: CGFloat = 0
+    private var baseline: CGFloat = 0
+    private var previousFast: CGFloat = 0
+    private var display: CGFloat = 0
+    private var previousPunch: CGFloat = 0
 
-    /// Slow incommensurate drift (rad/sec) — morphs the edge without spinning the whole ring.
-    private static let drift: (CGFloat, CGFloat, CGFloat, CGFloat) = (0.37, -0.23, 0.58, -0.16)
-    private static let mixEase: CGFloat = 0.16
-    private static let mixReturn: CGFloat = 0.025
-    private static let attackKick: CGFloat = 0.05
+    private var beating = false
+    private var beatT: CGFloat = 0
+
+    /// 12pt / 6pt / 14pt diameters → radii.
+    private static let restRadius: CGFloat = 6
+    private static let dipRadius: CGFloat = 3
+    private static let peakRadius: CGFloat = 7
+
+    private static let beatDuration: CGFloat = 0.48
+    /// Fraction of the beat: expand, then contract, then settle at 12pt.
+    private static let peakEnd: CGFloat = 0.28
+    private static let dipEnd: CGFloat = 0.62
+
+    private static let triggerOnset: CGFloat = 0.1
+    private static let triggerLevel: CGFloat = 0.2
+    /// Don’t retrigger until the settle phase (avoids chatter).
+    private static let retriggerAfter: CGFloat = 0.4
 
     func reset() {
-        envelope = 0
+        fast = 0
+        baseline = 0
+        previousFast = 0
+        display = 0
+        previousPunch = 0
+        beating = false
+        beatT = 0
         level = 0
-        morph = .rest
-        mixTarget = (1, 1, 1, 1)
+        discRadius = Self.restRadius
     }
 
     func tick(rawLevel: CGFloat) {
-        let previous = envelope
-        envelope = EQBlob.advanceEnvelope(previous: envelope, rawLevel: rawLevel)
-        level = envelope
+        let punch = EQBlob.advanceBeatPulse(
+            fast: &fast,
+            baseline: &baseline,
+            previousFast: &previousFast,
+            display: &display,
+            rawLevel: rawLevel
+        )
+        level = punch
 
-        let dt = 1 / EQBlob.animationFrameRate
-        let attack = max(0, envelope - previous)
+        let onset = punch - previousPunch
+        previousPunch = punch
 
-        var next = morph
-        next.p0 += Self.drift.0 * dt
-        next.p1 += Self.drift.1 * dt
-        next.p2 += Self.drift.2 * dt
-        next.p3 += Self.drift.3 * dt
-
-        if attack > Self.attackKick {
-            let kick = min(1, (attack - Self.attackKick) * 2.8)
-            next.p0 += kick * CGFloat.random(in: -1.15...1.15)
-            next.p1 += kick * CGFloat.random(in: -1.15...1.15)
-            next.p2 += kick * CGFloat.random(in: -1.15...1.15)
-            next.p3 += kick * CGFloat.random(in: -1.15...1.15)
-            mixTarget = (
-                CGFloat.random(in: 0.30...1.30),
-                CGFloat.random(in: 0.30...1.30),
-                CGFloat.random(in: 0.30...1.30),
-                CGFloat.random(in: 0.30...1.30)
-            )
+        let audible = EQBlob.reactivity(from: rawLevel) > 0.02 || punch > 0.04 || fast > 0.04
+        let canTrigger = audible && onset > Self.triggerOnset && punch > Self.triggerLevel
+        if canTrigger, !beating || beatT >= Self.retriggerAfter {
+            beating = true
+            beatT = 0
         }
 
-        next.w0 += (mixTarget.0 - next.w0) * Self.mixEase
-        next.w1 += (mixTarget.1 - next.w1) * Self.mixEase
-        next.w2 += (mixTarget.2 - next.w2) * Self.mixEase
-        next.w3 += (mixTarget.3 - next.w3) * Self.mixEase
+        let dt = 1 / EQBlob.animationFrameRate
+        if beating {
+            beatT += dt / Self.beatDuration
+            if beatT >= 1 {
+                beating = false
+                beatT = 0
+                discRadius = Self.restRadius
+            } else {
+                discRadius = Self.radius(at: beatT)
+            }
+        } else {
+            discRadius = Self.restRadius
+        }
+    }
 
-        mixTarget.0 += (1 - mixTarget.0) * Self.mixReturn
-        mixTarget.1 += (1 - mixTarget.1) * Self.mixReturn
-        mixTarget.2 += (1 - mixTarget.2) * Self.mixReturn
-        mixTarget.3 += (1 - mixTarget.3) * Self.mixReturn
+    /// 12 → 14 → 6 → 12 over one beat.
+    private static func radius(at t: CGFloat) -> CGFloat {
+        if t < peakEnd {
+            let u = easeOut(t / peakEnd)
+            return restRadius + (peakRadius - restRadius) * u
+        }
+        if t < dipEnd {
+            let u = easeInOut((t - peakEnd) / (dipEnd - peakEnd))
+            return peakRadius + (dipRadius - peakRadius) * u
+        }
+        let u = easeInOut((t - dipEnd) / (1 - dipEnd))
+        return dipRadius + (restRadius - dipRadius) * u
+    }
 
-        let tau = 2 * CGFloat.pi
-        next.p0 = next.p0.truncatingRemainder(dividingBy: tau)
-        next.p1 = next.p1.truncatingRemainder(dividingBy: tau)
-        next.p2 = next.p2.truncatingRemainder(dividingBy: tau)
-        next.p3 = next.p3.truncatingRemainder(dividingBy: tau)
-        morph = next
+    private static func easeOut(_ t: CGFloat) -> CGFloat {
+        let x = min(1, max(0, t))
+        return 1 - (1 - x) * (1 - x)
+    }
+
+    private static func easeInOut(_ t: CGFloat) -> CGFloat {
+        let x = min(1, max(0, t))
+        return x * x * (3 - 2 * x)
     }
 }

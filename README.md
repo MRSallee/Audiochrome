@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.4.2** — Settings can export, import, and reset this Mac’s configuration; EQ on Squiglink opens the sandbox with the draft’s filters.  
+> **v1.4.3** — Shared plate+disc profile marks, and a beat-reactive menu-bar disc that expands, contracts, then settles at rest.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

@@ -279,34 +279,22 @@ final class StatusBarController: NSObject, ObservableObject {
 
     func refreshIcon() {
         let button = statusItem?.button
-        let appearance = menuBarAppearance(for: button)
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
         let motion = EQBlobMotion.shared
         let hex = appState.activeProfileColorHex
-        let darkBar = StatusIconImage.isDark(appearance)
-        let paint = hex.map { ProfileColorPalette.nsColor($0, role: .menuBar, dark: darkBar) }
+        // Engaged icon sits on a white plate — match in-app mark (`.ui` light), not the
+        // pale menuBarDark ramp meant for drawing directly on a dark menu bar.
+        let paint = hex.map { ProfileColorPalette.nsColor($0, role: .ui, dark: false) }
         button?.image = StatusIconImage.make(
             color: paint ?? .black,
             isEngaged: appState.isEQEngaged,
-            level: animate ? motion.level : 0,
-            morph: animate ? motion.morph : .rest
+            discRadius: animate ? motion.discRadius : 6,
+            animated: animate
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
         if isPresented {
             setStatusItemHighlighted(true)
         }
-    }
-
-    private func menuBarAppearance(for button: NSStatusBarButton?) -> NSAppearance {
-        let buttonAppearance = button?.effectiveAppearance
-        let appAppearance = NSApp.effectiveAppearance
-        if let buttonAppearance, StatusIconImage.isDark(buttonAppearance) {
-            return buttonAppearance
-        }
-        if StatusIconImage.isDark(appAppearance) {
-            return appAppearance
-        }
-        return buttonAppearance ?? appAppearance
     }
 
     // MARK: - Present / dismiss
@@ -390,11 +378,14 @@ final class StatusBarController: NSObject, ObservableObject {
             ?? NSScreen.main
         let visible = screen?.visibleFrame ?? anchor
 
-        var x = anchor.minX
-        if x + size.width > visible.maxX - margin {
-            x = anchor.maxX - size.width
+        // Native menu-bar extras trailing-align: panel.maxX == status-item highlight.maxX.
+        var x = anchor.maxX - size.width
+        if x < visible.minX + margin {
+            x = visible.minX + margin
         }
-        x = min(max(x, visible.minX + margin), max(visible.minX + margin, visible.maxX - size.width - margin))
+        if x + size.width > visible.maxX - margin {
+            x = visible.maxX - size.width - margin
+        }
         // Leave a small gap under the menu bar, matching Wi‑Fi / Control Center.
         let y = anchor.minY - size.height - gap
         return NSRect(x: x, y: y, width: size.width, height: size.height)
@@ -402,12 +393,15 @@ final class StatusBarController: NSObject, ObservableObject {
 
     private func statusItemScreenRect() -> NSRect? {
         guard let button = statusItem?.button, let window = button.window else { return nil }
+        // Use the button’s frame in the status-item window — that is the highlighted
+        // hit target native menus align to (see Bluetooth / Wi‑Fi).
         let rectInWindow = button.convert(button.bounds, to: nil)
         let screenRect = window.convertToScreen(rectInWindow)
         if screenRect.width > 0, screenRect.height > 0 {
             return screenRect
         }
-        return window.frame
+        let slot = window.frame
+        return (slot.width > 0 && slot.height > 0) ? slot : nil
     }
 
     private func setStatusItemHighlighted(_ highlighted: Bool) {
@@ -519,37 +513,46 @@ enum StatusIconImage {
     static func make(
         color: NSColor,
         isEngaged: Bool,
-        level: CGFloat = 0,
-        morph: EQBlobMorph = .rest,
+        discRadius: CGFloat = 6,
+        animated: Bool = false,
         size: CGFloat = 18
     ) -> NSImage {
         let sizeValue = NSSize(width: size, height: size)
         let image = NSImage(size: sizeValue)
         image.lockFocus()
 
-        let inset: CGFloat = 1.0
-        let drawRect = NSRect(origin: .zero, size: sizeValue).insetBy(dx: inset, dy: inset)
-        let center = CGPoint(x: drawRect.midX, y: drawRect.midY)
-        // Leave room for ring stroke so the animated edge isn’t clipped.
-        let radius = min(drawRect.width, drawRect.height) / 2 * 0.78
+        let inset: CGFloat = 0.5
+        let plateRect = NSRect(origin: .zero, size: sizeValue).insetBy(dx: inset, dy: inset)
+        let center = CGPoint(x: plateRect.midX, y: plateRect.midY)
+        // Match in-app mark: 12pt disc at rest inside 18pt plate.
+        let restRadius: CGFloat = 6
 
-        let paint: NSColor = isEngaged ? color : .black
-        let ring = EQBlob.bezierPath(center: center, radius: radius, level: level, morph: morph)
-        let ringWidth = EQBlob.ringLineWidth(outerRadius: radius)
-        let inner = NSBezierPath(ovalIn: EQBlob.innerCircleRect(center: center, outerRadius: radius))
+        if isEngaged {
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: plateRect).fill()
 
-        paint.set()
-        inner.fill()
-        ring.lineWidth = ringWidth
-        ring.stroke()
+            let radius = animated ? max(1, discRadius) : restRadius
+            color.setFill()
+            Self.fillCircle(center: center, radius: radius)
+        } else {
+            // Template disc — system tints for the menu bar.
+            NSColor.black.setFill()
+            Self.fillCircle(center: center, radius: restRadius)
+        }
 
         image.unlockFocus()
         image.isTemplate = !isEngaged
         return image
     }
 
-    static func isDark(_ appearance: NSAppearance) -> Bool {
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    private static func fillCircle(center: CGPoint, radius: CGFloat) {
+        let rect = NSRect(
+            x: center.x - radius,
+            y: center.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )
+        NSBezierPath(ovalIn: rect).fill()
     }
 }
 

@@ -1519,9 +1519,11 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     guard hasProfile else { return }
                     showColorPicker = true
                 } label: {
-                    Circle()
-                        .fill(hasProfile ? accent : Color.primary.opacity(0.12))
-                        .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+                    ProfileMarkView(
+                        accent: accent,
+                        isSelected: hasProfile,
+                        showsDisc: hasProfile
+                    )
                 }
                 .buttonStyle(.plain)
                 .disabled(!hasProfile)
@@ -1607,9 +1609,7 @@ private struct OtherProfileRow: View {
                     .padding(.horizontal, MenuChrome.highlightInset)
 
                 HStack(spacing: 10) {
-                    Circle()
-                        .fill(color)
-                        .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+                    ProfileMarkView(accent: color, isSelected: false)
                     Text(title)
                         .font(MenuChrome.bodyFont)
                         .fontWeight(.regular)

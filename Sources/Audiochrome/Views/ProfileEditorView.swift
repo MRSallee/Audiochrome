@@ -94,9 +94,10 @@ struct ProfileEditorView: View {
             Button {
                 showColorPicker = true
             } label: {
-                Circle()
-                    .fill(draft.colorHex.profileColor(.ui, scheme: colorScheme))
-                    .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+                ProfileMarkView(
+                    accent: draft.colorHex.profileColor(.ui, scheme: colorScheme),
+                    isSelected: true
+                )
             }
             .buttonStyle(.plain)
             .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
