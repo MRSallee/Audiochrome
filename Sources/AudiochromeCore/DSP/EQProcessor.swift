@@ -15,6 +15,15 @@ struct Biquad: Sendable {
         z2 = 0
     }
 
+    /// Swap cookbook coefficients while keeping delay memory (avoids cold-start clicks on live edits).
+    mutating func setCoefficients(from other: Biquad) {
+        b0 = other.b0
+        b1 = other.b1
+        b2 = other.b2
+        a1 = other.a1
+        a2 = other.a2
+    }
+
     mutating func process(_ x: Double) -> Double {
         let y = b0 * x + z1
         z1 = b1 * x - a1 * y + z2
@@ -131,7 +140,8 @@ public final class EQProcessor: @unchecked Sendable {
         var length: Int
     }
 
-    /// Equal-power crossfade length when switching curves / bypassing.
+    /// Equal-power crossfade length when the filter *topology* changes (add/remove band, bypass).
+    /// Same-topology live edits morph coefficients in place and skip this fade.
     public static let crossfadeSeconds = 0.012
 
     /// Only touched by the audio thread after swap (plus brief lock during swap).
@@ -336,10 +346,38 @@ public final class EQProcessor: @unchecked Sendable {
             return
         }
 
+        // Live EQ edits keep the same band count — morph coeffs / preamp in place so IIR
+        // delay state survives. Restarting a 12 ms dual-path fade on every slider tick
+        // (cold-start banks) is what made busy mixes warble while dragging.
+        if Self.canMorphInPlace(from: current, to: next) {
+            Self.morphCoefficients(of: &current, into: next)
+            crossfade = nil
+            return
+        }
+
         let rate = max(next.sampleRate, current.sampleRate, 1)
         let length = max(1, Int((rate * Self.crossfadeSeconds).rounded()))
         crossfade = Crossfade(from: current, position: 0, length: length)
         current = next
+    }
+
+    private static func canMorphInPlace(from: Bank, to: Bank) -> Bool {
+        from.left.count == to.left.count
+            && from.right.count == to.right.count
+            && abs(from.sampleRate - to.sampleRate) < 0.5
+    }
+
+    private static func morphCoefficients(of bank: inout Bank, into next: Bank) {
+        for i in bank.left.indices {
+            bank.left[i].setCoefficients(from: next.left[i])
+        }
+        for i in bank.right.indices {
+            bank.right[i].setCoefficients(from: next.right[i])
+        }
+        bank.leftGain = next.leftGain
+        bank.rightGain = next.rightGain
+        bank.sampleRate = next.sampleRate
+        bank.signature = next.signature
     }
 
     private func advanceCrossfade(by frames: Int) {

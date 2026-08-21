@@ -149,11 +149,11 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: rowSpacing) {
-                ControlCenterRow(title: "Import", style: .command, leading: .fileImport) {
-                    importConfiguration()
-                }
                 ControlCenterRow(title: "Export", style: .command, leading: .fileExport) {
                     exportConfiguration()
+                }
+                ControlCenterRow(title: "Import", style: .command, leading: .fileImport) {
+                    importConfiguration()
                 }
                 ControlCenterRow(title: "Reset", style: .command, leading: .restore) {
                     resetConfiguration()

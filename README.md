@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.4.3** — Shared plate+disc profile marks, and a beat-reactive menu-bar disc that expands, contracts, then settles at rest.  
+> **v1.4.4** — Smoother live EQ edits while audio plays, and Manage Configuration ordered Export → Import → Reset.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
