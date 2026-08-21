@@ -371,8 +371,7 @@ public final class AppState: ObservableObject {
     }
 
     public var needsAudioPermission: Bool {
-        if case .needsAudioPermission = engineStatus { return true }
-        return false
+        SystemAudioPermission.check() != .authorized
     }
 
     private func noteNeedsAudioPermission() {
@@ -616,6 +615,12 @@ public final class AppState: ObservableObject {
         if enabled, mapping.profileFilename == nil {
             return
         }
+        // Never arm live EQ without capture permission (engineStatus can lag TCC briefly).
+        if enabled, key == activeMappingIdentityKey,
+           SystemAudioPermission.check() != .authorized {
+            noteNeedsAudioPermission()
+            return
+        }
         mapping.enabled = enabled
         config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
@@ -629,6 +634,10 @@ public final class AppState: ObservableObject {
     /// Toggle EQ for the current default output (used by status-item right-click).
     public func toggleActiveEQ() {
         guard let key = activeMappingIdentityKey else { return }
+        if SystemAudioPermission.check() != .authorized {
+            noteNeedsAudioPermission()
+            return
+        }
         let mapping = config.mapping(forIdentity: key)
         if !mapping.enabled, mapping.profileFilename == nil {
             return
@@ -981,18 +990,15 @@ public final class AppState: ObservableObject {
         audioEngine.stop(reason: .appQuit)
         deviceService.stopObserving()
 
+        // Relaunch *this* .app by path. NSWorkspace.openApplication can resolve the
+        // shared bundle ID to a different install (debug .build vs /Applications).
         let bundleURL = Bundle.main.bundleURL
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["-n", bundleURL.path]
+        try? open.run()
 
-        NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { _, _ in
-            DispatchQueue.main.async {
-                NSApplication.shared.terminate(nil)
-            }
-        }
-
-        // Fallback if openApplication never calls back (should be rare).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             NSApplication.shared.terminate(nil)
         }
     }
@@ -1074,13 +1080,7 @@ public final class AppState: ObservableObject {
             if case .engaged = audioEngine.status {
                 audioEngine.stop(reason: .disabled)
             }
-            let armed = activeMapping.map { $0.enabled && $0.profileFilename != nil } ?? false
-            if armed {
-                noteNeedsAudioPermission()
-            } else {
-                engineStatus = audioEngine.status
-                objectWillChange.send()
-            }
+            noteNeedsAudioPermission()
         }
     }
 
@@ -1163,7 +1163,13 @@ public final class AppState: ObservableObject {
     }
 
     private func publishEngineDiagnostics() {
-        engineStatus = audioEngine.status
+        // Capture permission is process-wide. Don't let a device switch / idle
+        // teardown clear the no-access UI.
+        if SystemAudioPermission.check() != .authorized {
+            engineStatus = .needsAudioPermission
+        } else {
+            engineStatus = audioEngine.status
+        }
         engineDiagnostics = audioEngine.diagnostics
     }
 

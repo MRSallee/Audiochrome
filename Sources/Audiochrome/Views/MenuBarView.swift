@@ -184,6 +184,7 @@ struct MenuBarView: View {
                     isFocused: isActivePanelVisible,
                     accent: activeAccent,
                     topPadding: MenuChrome.menuPadding,
+                    eqToggleBlocked: appState.needsAudioPermission,
                     onToggleExpand: {
                         if renamingIdentityKey != nil {
                             commitRename()
@@ -209,10 +210,12 @@ struct MenuBarView: View {
         isFocused: Bool,
         accent: Color,
         topPadding: CGFloat = MenuChrome.headerVerticalPadding,
+        eqToggleBlocked: Bool = false,
         onToggleExpand: @escaping () -> Void
     ) -> some View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
         let isRenaming = renamingIdentityKey == device.identityKey
+        let toggleDisabled = mapping.profileFilename == nil || eqToggleBlocked
 
         return ZStack {
             if !isRenaming {
@@ -232,16 +235,12 @@ struct MenuBarView: View {
                     .frame(minHeight: MenuChrome.textRowContentHeight)
                     .allowsHitTesting(isRenaming)
 
-                Toggle(
-                    "",
-                    isOn: Binding(
-                        get: {
-                            // Armed in config isn’t “on” if EQ can’t run (e.g. no audio permission).
-                            if device.isDefault, appState.needsAudioPermission {
-                                return false
-                            }
-                            return mapping.enabled
-                        },
+                // Constant off + no hit testing while blocked — macOS Switch still animates
+                // a rejected Binding and can write through `.disabled` alone.
+                Toggle("", isOn: eqToggleBlocked
+                    ? .constant(false)
+                    : Binding(
+                        get: { mapping.enabled },
                         set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
                     )
                 )
@@ -249,9 +248,20 @@ struct MenuBarView: View {
                 .toggleStyle(.switch)
                 .focusEffectDisabled()
                 .focusable(false)
-                .disabled(mapping.profileFilename == nil)
+                .disabled(toggleDisabled)
+                .allowsHitTesting(!toggleDisabled)
                 .tint(accent)
                 .layoutPriority(1)
+                .accessibilityLabel("EQ")
+                .accessibilityValue(eqToggleBlocked ? "Unavailable" : (mapping.enabled ? "On" : "Off"))
+                .overlay {
+                    // Absorb clicks that NSSwitch still accepts while disabled.
+                    if toggleDisabled {
+                        Color.clear
+                            .contentShape(Rectangle())
+                    }
+                }
+                .id("eq-toggle-\(device.identityKey)-blocked:\(eqToggleBlocked)")
             }
             .padding(.horizontal, MenuChrome.contentInset)
             .padding(.top, topPadding)
@@ -325,10 +335,11 @@ struct MenuBarView: View {
                 identityKey: identityKey,
                 otherProfilesProgress: otherProfilesProgress,
                 colorPickerIdentityKey: $colorPickerIdentityKey,
-                showsLeadingDivider: false
+                showsLeadingDivider: false,
+                showsCompare: identityKey == appState.activeMappingIdentityKey
             )
         }
-        .frame(height: progress * height, alignment: .top)
+        .frame(height: max(0, progress) * height, alignment: .top)
         .clipped()
         .opacity(progress)
         .allowsHitTesting(progress > 0.98)
@@ -970,6 +981,7 @@ private enum OutputEQPanelMetrics {
     }
 
     /// Permission slot: Active Profile header + message row + settings pill.
+    /// Keep in lockstep with `audioPermissionPlaceholder` paddings.
     static func audioPermissionBlockHeight() -> CGFloat {
         MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
@@ -1016,7 +1028,8 @@ private enum OutputEQPanelMetrics {
             height += 1 // Divider visual weight (padded elsewhere; keep tiny)
         }
 
-        if appState.needsAudioPermission {
+        if appState.needsAudioPermission,
+           identityKey == appState.activeMappingIdentityKey {
             height += audioPermissionBlockHeight()
         } else {
             height += activeProfileBlockHeight(hasProfile: hasProfile)
@@ -1039,6 +1052,8 @@ private struct OutputEQPanel: View {
     @Binding var otherProfilesProgress: CGFloat
     @Binding var colorPickerIdentityKey: String?
     var showsLeadingDivider: Bool = true
+    /// A/B Compare only on the default output — inactive device panels can’t drive live EQ.
+    var showsCompare: Bool = true
     @State private var isProfileDropTargeted = false
 
     private var mapping: OutputMapping {
@@ -1127,7 +1142,7 @@ private struct OutputEQPanel: View {
 
     private var activeProfileSection: some View {
         Group {
-            if appState.needsAudioPermission {
+            if appState.needsAudioPermission, showsCompare {
                 audioPermissionPlaceholder
                     .frame(
                         height: OutputEQPanelMetrics.audioPermissionBlockHeight(),
@@ -1167,11 +1182,13 @@ private struct OutputEQPanel: View {
                             )
                             .frame(height: MenuChrome.waveformHeight)
 
-                            CompareChip(isOn: appState.isEQComparing) { comparing in
-                                appState.setEQComparing(comparing)
+                            if showsCompare {
+                                CompareChip(isOn: appState.isEQComparing) { comparing in
+                                    appState.setEQComparing(comparing)
+                                }
+                                .padding(.top, 8)
+                                .padding(.trailing, 8)
                             }
-                            .padding(.top, 8)
-                            .padding(.trailing, 8)
                         }
                         .padding(.horizontal, MenuChrome.contentInset)
                         .padding(.top, MenuChrome.waveformSpacing)
@@ -1198,14 +1215,14 @@ private struct OutputEQPanel: View {
                 .font(MenuChrome.bodyFont)
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: MenuChrome.iconRowHeight, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 .padding(.horizontal, MenuChrome.contentInset)
+                .frame(height: MenuChrome.iconRowHeight, alignment: .leading)
 
             PermissionActionPillButton(title: "Privacy & Security Settings", showsExternalLink: true) {
                 appState.openAudioPermissionSettings()
             }
-            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.horizontal, MenuChrome.highlightInset)
             .padding(.top, MenuChrome.waveformSpacing)
             .padding(.bottom, MenuChrome.waveformBottomPadding)
         }
@@ -1322,15 +1339,21 @@ struct CompareChip: View {
     private static let holdThreshold: TimeInterval = 0.18
 
     var body: some View {
-        Text("Compare")
+        Text("COMPARE")
             .font(MenuChrome.bodyFont)
             .foregroundStyle(isOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             .lineLimit(1)
-            .frame(width: ValuePill.standardWidth, height: ValuePill.height)
+            .padding(.horizontal, 8)
+            .frame(height: ValuePill.height)
             .background {
                 Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(isOn ? 0.10 : 0.05))
+                    .fill(Color.primary.opacity(isOn ? 0.10 : 0))
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.primary.opacity(isOn ? 0 : 0.10), lineWidth: 1)
+                    }
             }
+            .fixedSize(horizontal: true, vertical: false)
             .contentShape(Capsule())
             .gesture(
                 DragGesture(minimumDistance: 0)
@@ -1491,12 +1514,17 @@ struct ProfileWaveformView: View {
     }
 }
 
-/// Filled pill matching command-row height.
+/// Filled pill matching command-row height; text lines up with body labels.
 private struct PermissionActionPillButton: View {
     let title: String
     var showsExternalLink: Bool = false
     let action: () -> Void
     @State private var isHovering = false
+
+    /// Keep label flush with `contentInset` while the fill uses `highlightInset`.
+    private var labelInset: CGFloat {
+        max(0, MenuChrome.contentInset - MenuChrome.highlightInset)
+    }
 
     var body: some View {
         Button(action: action) {
@@ -1512,7 +1540,7 @@ private struct PermissionActionPillButton: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.horizontal, labelInset)
             .frame(height: MenuChrome.iconRowHeight)
             .background {
                 RoundedRectangle(cornerRadius: MenuChrome.highlightCornerRadius, style: .continuous)

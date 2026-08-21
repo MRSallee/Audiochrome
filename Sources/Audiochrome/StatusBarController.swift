@@ -21,7 +21,9 @@ final class StatusBarController: NSObject, ObservableObject {
     private var statusItemClickMonitor: Any?
     private var isPresented = false
     /// Captured during the click while the status-item window is valid.
-    private var pendingAnchorRect: NSRect?
+    /// Kept for the life of the open menu — later layout passes must not
+    /// re-query a nil/stale button window and dump the panel in a screen corner.
+    private var lastAnchorRect: NSRect?
 
     init(appState: AppState) {
         self.appState = appState
@@ -126,7 +128,7 @@ final class StatusBarController: NSObject, ObservableObject {
             return
         }
 
-        pendingAnchorRect = statusItemScreenRect()
+        rememberAnchorRect()
         if isPresented {
             closeMenu()
         } else {
@@ -190,6 +192,8 @@ final class StatusBarController: NSObject, ObservableObject {
         )
         hosting.view.autoresizingMask = [.width, .minYMargin]
         contentRoot.addSubview(hosting.view)
+        panel.hostingView = hosting.view
+        panel.hostingHeight = MenuMetrics.hostingHeight
 
         if #available(macOS 26.0, *) {
             // Stock Wi‑Fi / Sound use Liquid Glass on macOS 26+.
@@ -221,9 +225,10 @@ final class StatusBarController: NSObject, ObservableObject {
         panel.animationBehavior = .none
         panel.alphaValue = 0
         panel.orderOut(nil)
+        panel.pinHostingToTop()
         self.panel = panel
         chrome.attach(panel) { [weak self] size in
-            self?.anchoredFrame(for: size, preferredAnchor: nil)
+            self?.anchoredFrame(for: size)
                 ?? NSRect(x: 0, y: 0, width: size.width, height: size.height)
         }
     }
@@ -314,17 +319,15 @@ final class StatusBarController: NSObject, ObservableObject {
         // greedy by design, so its fitting size would just be the proposal.
         hosting.view.layoutSubtreeIfNeeded()
         let height = menuChrome?.contentHeight ?? MenuMetrics.fallbackHeight
-
         let size = NSSize(width: MenuMetrics.width, height: height)
-        let frame = anchoredFrame(for: size, preferredAnchor: pendingAnchorRect)
-        pendingAnchorRect = nil
 
-        panel.setFrame(frame, display: true)
-
+        // New panels ignore setFrame until they’re on a screen. Show first, then place.
         panel.alphaValue = 1
         NSApp.activate(ignoringOtherApps: true)
         panel.orderFrontRegardless()
         panel.makeKeyAndOrderFront(nil)
+        panel.setFrame(anchoredFrame(for: size), display: true)
+        panel.pinHostingToTop()
         panel.invalidateShadow()
         isPresented = true
         setStatusItemHighlighted(true)
@@ -333,12 +336,17 @@ final class StatusBarController: NSObject, ObservableObject {
         startDismissMonitors()
 
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.isPresented else { return }
+            guard let self, self.isPresented, let panel = self.panel else { return }
+            // Status-item window.frame is often only correct after the first show.
+            self.rememberAnchorRect()
             self.menuChrome?.syncToMeasuredHeight()
-            if let panel = self.panel {
-                panel.setFrame(self.anchoredFrame(for: panel.frame.size, preferredAnchor: nil), display: true)
-                panel.invalidateShadow()
-            }
+            let height = self.menuChrome?.contentHeight ?? panel.frame.height
+            panel.setFrame(
+                self.anchoredFrame(for: NSSize(width: MenuMetrics.width, height: height)),
+                display: true
+            )
+            panel.pinHostingToTop()
+            panel.invalidateShadow()
             self.setStatusItemHighlighted(true)
         }
     }
@@ -358,10 +366,16 @@ final class StatusBarController: NSObject, ObservableObject {
         menuChrome?.persistOnHide()
     }
 
-    private func anchoredFrame(for size: NSSize, preferredAnchor: NSRect?) -> NSRect {
+    private func rememberAnchorRect() {
+        if let rect = statusItemScreenRect(), rect.width > 0, rect.height > 0 {
+            lastAnchorRect = rect
+        }
+    }
+
+    private func anchoredFrame(for size: NSSize) -> NSRect {
         let margin = MenuMetrics.screenMargin
         let gap = MenuMetrics.menuBarGap
-        let anchor = preferredAnchor ?? statusItemScreenRect()
+        let anchor = lastAnchorRect ?? statusItemScreenRect()
 
         guard let anchor else {
             let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -392,16 +406,16 @@ final class StatusBarController: NSObject, ObservableObject {
     }
 
     private func statusItemScreenRect() -> NSRect? {
-        guard let button = statusItem?.button, let window = button.window else { return nil }
-        // Use the button’s frame in the status-item window — that is the highlighted
-        // hit target native menus align to (see Bluetooth / Wi‑Fi).
-        let rectInWindow = button.convert(button.bounds, to: nil)
-        let screenRect = window.convertToScreen(rectInWindow)
-        if screenRect.width > 0, screenRect.height > 0 {
-            return screenRect
+        guard let button = statusItem?.button else { return nil }
+        // The status-item window *is* the highlight slot. Prefer it over converting
+        // button.bounds, which can lag after activate / highlight.
+        if let window = button.window {
+            let slot = window.frame
+            if slot.width > 0, slot.height > 0 {
+                return slot
+            }
         }
-        let slot = window.frame
-        return (slot.width > 0 && slot.height > 0) ? slot : nil
+        return nil
     }
 
     private func setStatusItemHighlighted(_ highlighted: Bool) {
@@ -498,8 +512,24 @@ final class StatusBarController: NSObject, ObservableObject {
 }
 
 final class StatusMenuPanel: NSPanel {
+    /// Tall SwiftUI host, top-pinned. Call after a settled `setFrame`, never
+    /// from inside an animator — that races Core Animation (crash on edit).
+    var hostingView: NSView?
+    var hostingHeight: CGFloat = 1600
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    func pinHostingToTop() {
+        guard let hostingView, hostingView.superview != nil else { return }
+        let size = frame.size
+        hostingView.frame = NSRect(
+            x: 0,
+            y: size.height - hostingHeight,
+            width: size.width,
+            height: hostingHeight
+        )
+    }
 
     /// Kill the WindowServer hairline that contours `hasShadow` on transparent panels.
     /// Stock Control Center menus suppress this rim; without it we get a gray outline.
@@ -561,8 +591,9 @@ private enum MenuMetrics {
     /// Control Center / Wi‑Fi panels use 16; default windows use 10.
     static let cornerRadius: CGFloat = 16
     static let minMeasuredHeight: CGFloat = 80
-    /// Only used before SwiftUI has ever reported a height.
-    static let fallbackHeight: CGFloat = 280
+    /// Only used before SwiftUI has ever reported a height. Tall enough for the
+    /// no-permission home menu (CTA + other outputs + Settings + Quit + Relaunch).
+    static let fallbackHeight: CGFloat = 480
     /// Fixed hosting-view height: tall enough for any menu, so the view never needs
     /// resizing while the panel animates. Overflow is clipped by the panel.
     static let hostingHeight: CGFloat = 1600
@@ -798,6 +829,7 @@ final class PopoverChrome: ObservableObject {
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak panel] in
             Task { @MainActor in
+                panel?.pinHostingToTop()
                 panel?.invalidateShadow()
             }
         }
@@ -809,16 +841,15 @@ final class PopoverChrome: ObservableObject {
         let height = max(MenuMetrics.minMeasuredHeight, height)
         guard panelIsShowing(), let panel else { return }
         let size = NSSize(width: MenuMetrics.width, height: height)
-        guard abs(panel.frame.height - size.height) > 0.25
-            || abs(panel.frame.width - size.width) > 0.25
+        let frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
+        guard abs(panel.frame.height - frame.height) > 0.25
+            || abs(panel.frame.width - frame.width) > 0.25
+            || abs(panel.frame.origin.x - frame.origin.x) > 0.25
+            || abs(panel.frame.origin.y - frame.origin.y) > 0.25
         else { return }
         restoreHeightFloor()
-        let frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            panel.setFrame(frame, display: true)
-        }
+        panel.setFrame(frame, display: true)
+        panel.pinHostingToTop()
         panel.invalidateShadow()
     }
 
@@ -838,6 +869,16 @@ final class PopoverChrome: ObservableObject {
 
 }
 
+private struct ViewHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Measures SwiftUI’s laid-out height via PreferenceKey (same path as v0.9 / v1.0).
+/// Width must be applied *inside* the fixedSize+GeometryReader pair — measuring
+/// unconstrained then framing outside was under-reporting and clipping the footer.
 private struct MeasuredScreen<Content: View>: View {
     let screen: MenuPanelScreen
     @ObservedObject var chrome: PopoverChrome
@@ -845,10 +886,14 @@ private struct MeasuredScreen<Content: View>: View {
 
     var body: some View {
         content()
+            .frame(width: MenuMetrics.width, alignment: .top)
             .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                proxy.size.height
-            } action: { height in
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ViewHeightKey.self, value: proxy.size.height)
+                }
+            )
+            .onPreferenceChange(ViewHeightKey.self) { height in
                 chrome.reportMeasuredHeight(height, for: screen)
             }
     }
@@ -880,8 +925,6 @@ private struct MenuBarRoot: View {
             .background {
                 EndEditingClickMonitor()
             }
-            .frame(width: MenuMetrics.width, alignment: .top)
-            .fixedSize(horizontal: false, vertical: true)
             // Permission banner can appear while a system sheet is up; re-sync after layout
             // settles so the panel grows instead of clipping.
             .onChange(of: appState.needsAudioPermission) { _, _ in
@@ -900,10 +943,8 @@ private struct MenuBarRoot: View {
         if let screen = chrome.mountedOverlay, screen != .home {
             MeasuredScreen(screen: screen, chrome: chrome) {
                 overlayScreen(screen)
-                    .frame(width: MenuMetrics.width, alignment: .top)
                     .background { overlayVeil }
             }
-            .fixedSize(horizontal: false, vertical: true)
             .offset(x: (1 - chrome.overlayProgress) * MenuMetrics.width)
             .allowsHitTesting(chrome.overlayProgress > 0.02)
             .accessibilityHidden(chrome.overlayProgress < 0.5)

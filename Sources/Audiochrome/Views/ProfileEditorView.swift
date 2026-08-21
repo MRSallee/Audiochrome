@@ -58,11 +58,13 @@ struct ProfileEditorView: View {
                     )
                     .frame(height: MenuChrome.waveformHeight)
 
-                    CompareChip(isOn: appState.isEQComparing) { comparing in
-                        appState.setEQComparing(comparing)
+                    if canCompare(draft) {
+                        CompareChip(isOn: appState.isEQComparing) { comparing in
+                            appState.setEQComparing(comparing)
+                        }
+                        .padding(.top, 8)
+                        .padding(.trailing, 8)
                     }
-                    .padding(.top, 8)
-                    .padding(.trailing, 8)
                 }
                 .padding(.horizontal, MenuChrome.contentInset)
                 .padding(.top, MenuChrome.contentInset)
@@ -95,6 +97,11 @@ struct ProfileEditorView: View {
             }
             .padding(.bottom, MenuChrome.menuPadding)
         }
+    }
+
+    private func canCompare(_ draft: ProfileEditorDraft) -> Bool {
+        guard let active = appState.activeMappingIdentityKey else { return false }
+        return appState.mappingIdentityKey(for: draft.identityKey) == active
     }
 
     private func header(_ draft: ProfileEditorDraft) -> some View {
