@@ -51,11 +51,19 @@ struct ProfileEditorView: View {
             header(draft)
 
             MenuGroupedSection {
-                ProfileWaveformView(
-                    preview: appState.eqFrequencyResponse(for: draft),
-                    colorHex: draft.colorHex
-                )
-                .frame(height: MenuChrome.waveformHeight)
+                ZStack(alignment: .topTrailing) {
+                    ProfileWaveformView(
+                        preview: appState.eqFrequencyResponse(for: draft),
+                        colorHex: draft.colorHex
+                    )
+                    .frame(height: MenuChrome.waveformHeight)
+
+                    CompareChip(isOn: appState.isEQComparing) { comparing in
+                        appState.setEQComparing(comparing)
+                    }
+                    .padding(.top, 8)
+                    .padding(.trailing, 8)
+                }
                 .padding(.horizontal, MenuChrome.contentInset)
                 .padding(.top, MenuChrome.contentInset)
                 .padding(.bottom, MenuChrome.waveformBottomPadding)

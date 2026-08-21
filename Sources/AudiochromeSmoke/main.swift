@@ -101,6 +101,21 @@ struct SmokeMain {
             ).absoluteString == "https://squig.link/?eqModel=_EQ_Sandbox"
         )
 
+        let boost = EQProfile(
+            name: "boost",
+            linked: ChannelEQ(
+                preampDB: 0,
+                filters: [EQFilter(enabled: true, kind: .peaking, frequencyHz: 1_000, gainDB: 6, q: 1)]
+            )
+        )
+        let boostCurve = EQProcessor.frequencyResponseCurve(for: boost, pointCount: 64)
+        let boostFreqs = EQLoudnessMatching.logSpacedFrequencies(pointCount: 64)
+        let boostMatch = EQLoudnessMatching.bypassMatchGainDB(
+            eqCurveDB: boostCurve,
+            frequenciesHz: boostFreqs
+        )
+        check("compare match for +6 dB peak is positive", boostMatch > 1)
+
         var snapshot = AppConfig()
         snapshot.openAtLogin = true
         snapshot.animatedMenuBarIcon = false

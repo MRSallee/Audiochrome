@@ -1160,11 +1160,19 @@ private struct OutputEQPanel: View {
                     }
 
                     if hasProfile, let filename = mapping.profileFilename {
-                        ProfileWaveformView(
-                            preview: appState.eqFrequencyResponse(forIdentity: identityKey),
-                            colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey)
-                        )
-                        .frame(height: MenuChrome.waveformHeight)
+                        ZStack(alignment: .topTrailing) {
+                            ProfileWaveformView(
+                                preview: appState.eqFrequencyResponse(forIdentity: identityKey),
+                                colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey)
+                            )
+                            .frame(height: MenuChrome.waveformHeight)
+
+                            CompareChip(isOn: appState.isEQComparing) { comparing in
+                                appState.setEQComparing(comparing)
+                            }
+                            .padding(.top, 8)
+                            .padding(.trailing, 8)
+                        }
                         .padding(.horizontal, MenuChrome.contentInset)
                         .padding(.top, MenuChrome.waveformSpacing)
                         .padding(.bottom, MenuChrome.waveformSpacing)
@@ -1300,6 +1308,54 @@ private struct OutputEQPanel: View {
         guard let filename = mapping.profileFilename else { return }
         appState.beginEditProfile(forIdentity: identityKey, filename: filename)
         popoverChrome.present(.eqEditor)
+    }
+}
+
+/// A/B compare chip — matches `ValuePill` size/type. Click toggles; hold previews dry until release.
+struct CompareChip: View {
+    var isOn: Bool
+    var setComparing: (Bool) -> Void
+
+    @State private var pressStartedAt: Date?
+    @State private var wasOnAtPress = false
+
+    private static let holdThreshold: TimeInterval = 0.18
+
+    var body: some View {
+        Text("Compare")
+            .font(MenuChrome.bodyFont)
+            .foregroundStyle(isOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
+            .lineLimit(1)
+            .frame(width: ValuePill.standardWidth, height: ValuePill.height)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(isOn ? 0.10 : 0.05))
+            }
+            .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard pressStartedAt == nil else { return }
+                        wasOnAtPress = isOn
+                        pressStartedAt = Date()
+                        if !isOn {
+                            setComparing(true)
+                        }
+                    }
+                    .onEnded { _ in
+                        let started = pressStartedAt ?? Date()
+                        pressStartedAt = nil
+                        let held = Date().timeIntervalSince(started) >= Self.holdThreshold
+                        if held {
+                            setComparing(false)
+                        } else {
+                            setComparing(!wasOnAtPress)
+                        }
+                    }
+            )
+            .accessibilityLabel("Compare EQ")
+            .accessibilityHint("Toggle level-matched bypass. Press and hold to preview, then release.")
+            .accessibilityAddTraits(isOn ? [.isSelected, .isButton] : [.isButton])
     }
 }
 

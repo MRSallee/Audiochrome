@@ -14,6 +14,8 @@ public final class AppState: ObservableObject {
     @Published public private(set) var engineStatus: AudioEngineStatus = .idle
     @Published public private(set) var engineDiagnostics: AudioEngineDiagnostics = .idle
     @Published public private(set) var profileEditor: ProfileEditorDraft?
+    /// A/B compare in the EQ editor: dry (level-matched) vs current EQ.
+    @Published public private(set) var isEQComparing = false
 
     public let profileStore: ProfileStore
     public let configStore: ConfigStore
@@ -617,6 +619,9 @@ public final class AppState: ObservableObject {
         mapping.enabled = enabled
         config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
+        if !enabled {
+            isEQComparing = false
+        }
         objectWillChange.send()
         syncEngine()
     }
@@ -637,6 +642,7 @@ public final class AppState: ObservableObject {
         var draft = ProfileEditorDraft.create(identityKey: key, colorHex: color)
         draft.preampDB = autoPregainDB(for: draft)
         profileEditor = draft
+        isEQComparing = false
         objectWillChange.send()
         syncEngine()
     }
@@ -653,6 +659,7 @@ public final class AppState: ObservableObject {
         )
         draft.preampDB = autoPregainDB(for: draft)
         profileEditor = draft
+        isEQComparing = false
         objectWillChange.send()
         syncEngine()
     }
@@ -697,6 +704,7 @@ public final class AppState: ObservableObject {
     public func cancelProfileEditor() {
         guard profileEditor != nil else { return }
         profileEditor = nil
+        isEQComparing = false
         lastSyncedProfile = nil
         objectWillChange.send()
         syncEngine()
@@ -717,12 +725,22 @@ public final class AppState: ObservableObject {
             }
             setProfileColor(filename: saved.filename, hex: draft.colorHex)
             profileEditor = nil
+            isEQComparing = false
             lastSyncedProfile = nil
             setProfile(forIdentity: key, filename: saved.filename)
             return true
         } catch {
             return false
         }
+    }
+
+    /// Toggle or set A/B compare (dry, loudness-matched vs current EQ).
+    public func setEQComparing(_ comparing: Bool) {
+        guard isEQComparing != comparing else { return }
+        isEQComparing = comparing
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
     }
 
     public func setProfile(forIdentity identityKey: String, filename: String?) {
@@ -738,6 +756,7 @@ public final class AppState: ObservableObject {
         }
         config.setMapping(mapping, forIdentity: key)
         configStore.save(config)
+        isEQComparing = false
         objectWillChange.send()
         syncEngine()
     }
@@ -847,12 +866,40 @@ public final class AppState: ObservableObject {
         guard let filename = mapping.profileFilename else { return nil }
         let url = profilesDirectoryURL(forIdentity: key).appendingPathComponent(filename)
         guard let profile = try? ProfileParser.parseFile(at: url) else { return nil }
+        if isEQComparing {
+            return EQFrequencyResponsePreview(
+                magnitudesDB: Array(repeating: 0, count: max(pointCount, 2)),
+                halfRangeDB: profile.waveformHalfRangeDB
+            )
+        }
         return frequencyResponsePreview(for: profile, pointCount: pointCount)
     }
 
     /// Editor curve for the in-progress draft (create or edit).
     public func eqFrequencyResponse(for draft: ProfileEditorDraft, pointCount: Int = 96) -> EQFrequencyResponsePreview {
-        frequencyResponsePreview(for: draft.eqProfile, pointCount: pointCount)
+        if isEQComparing {
+            return EQFrequencyResponsePreview(
+                magnitudesDB: Array(repeating: 0, count: max(pointCount, 2)),
+                halfRangeDB: draft.eqProfile.waveformHalfRangeDB
+            )
+        }
+        return frequencyResponsePreview(for: draft.eqProfile, pointCount: pointCount)
+    }
+
+    /// Squiglink-style dry gain so bypass loudness matches the live EQ curve.
+    public func compareBypassGainDB(for draft: ProfileEditorDraft, pointCount: Int = 96) -> Double {
+        compareBypassGainDB(for: draft.eqProfile, pointCount: pointCount)
+    }
+
+    public func compareBypassGainDB(for profile: EQProfile, pointCount: Int = 96) -> Double {
+        let rate = predictedCurveSampleRate()
+        let freqs = EQLoudnessMatching.logSpacedFrequencies(pointCount: pointCount, sampleRate: rate)
+        let curve = EQProcessor.frequencyResponseCurve(
+            for: profile,
+            sampleRate: rate,
+            pointCount: pointCount
+        )
+        return EQLoudnessMatching.bypassMatchGainDB(eqCurveDB: curve, frequenciesHz: freqs)
     }
 
     private func frequencyResponsePreview(for profile: EQProfile, pointCount: Int) -> EQFrequencyResponsePreview {
@@ -1188,7 +1235,12 @@ public final class AppState: ObservableObject {
             break
         }
 
-        let syncToken = liveDraft.map { "editor:\($0.revision)" } ?? filename
+        let syncToken: String
+        if let liveDraft {
+            syncToken = "editor:\(liveDraft.revision)" + (isEQComparing ? ":cmp" : "")
+        } else {
+            syncToken = filename + (isEQComparing ? ":cmp" : "")
+        }
 
         // Skip re-apply when nothing meaningful changed (prevents periodic filter resets/pops).
         if lastSyncedEnabled == true,
@@ -1215,7 +1267,15 @@ public final class AppState: ObservableObject {
 
         let profile: EQProfile
         if let liveDraft {
-            profile = liveDraft.eqProfile
+            if isEQComparing {
+                let match = compareBypassGainDB(for: liveDraft)
+                profile = EQProfile(
+                    name: liveDraft.name,
+                    linked: ChannelEQ(preampDB: match, filters: [])
+                )
+            } else {
+                profile = liveDraft.eqProfile
+            }
         } else {
             let url = profilesDirectoryURL(forIdentity: mappingKey)
                 .appendingPathComponent(filename)
@@ -1224,7 +1284,15 @@ public final class AppState: ObservableObject {
                 publishEngineDiagnostics()
                 return
             }
-            profile = parsed
+            if isEQComparing {
+                let match = compareBypassGainDB(for: parsed)
+                profile = EQProfile(
+                    name: parsed.name,
+                    linked: ChannelEQ(preampDB: match, filters: [])
+                )
+            } else {
+                profile = parsed
+            }
         }
 
         do {
