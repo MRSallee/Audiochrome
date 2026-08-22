@@ -278,22 +278,23 @@ final class StatusBarController: NSObject, ObservableObject {
             refreshIcon()
             return
         }
-        EQBlobMotion.shared.tick(rawLevel: CGFloat(appState.audioEngine.outputLevel))
         refreshIcon()
     }
 
     func refreshIcon() {
         let button = statusItem?.button
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
-        let motion = EQBlobMotion.shared
         let hex = appState.activeProfileColorHex
         // Engaged icon sits on a white plate — match in-app mark (`.ui` light), not the
         // pale menuBarDark ramp meant for drawing directly on a dark menu bar.
         let paint = hex.map { ProfileColorPalette.nsColor($0, role: .ui, dark: false) }
+        let bands = animate
+            ? appState.audioEngine.spectrumLevels.map { CGFloat($0) }
+            : []
         button?.image = StatusIconImage.make(
             color: paint ?? .black,
             isEngaged: appState.isEQEngaged,
-            discRadius: animate ? motion.discRadius : 6,
+            bands: bands,
             animated: animate
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
@@ -555,36 +556,90 @@ enum StatusIconImage {
     static func make(
         color: NSColor,
         isEngaged: Bool,
-        discRadius: CGFloat = 6,
+        bands: [CGFloat] = [],
         animated: Bool = false,
         size: CGFloat = 18
     ) -> NSImage {
         let sizeValue = NSSize(width: size, height: size)
+        let pixels = Int(size * 2)
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixels,
+            pixelsHigh: pixels,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return NSImage(size: sizeValue)
+        }
+        rep.size = sizeValue
         let image = NSImage(size: sizeValue)
-        image.lockFocus()
+        image.addRepresentation(rep)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.shouldAntialias = true
+        NSGraphicsContext.current?.imageInterpolation = .high
 
         let inset: CGFloat = 0.5
         let plateRect = NSRect(origin: .zero, size: sizeValue).insetBy(dx: inset, dy: inset)
         let center = CGPoint(x: plateRect.midX, y: plateRect.midY)
-        // Match in-app mark: 12pt disc at rest inside 18pt plate.
         let restRadius: CGFloat = 6
 
         if isEngaged {
             NSColor.white.setFill()
             NSBezierPath(ovalIn: plateRect).fill()
-
-            let radius = animated ? max(1, discRadius) : restRadius
             color.setFill()
-            Self.fillCircle(center: center, radius: radius)
+            if animated {
+                Self.fillSpectrumBlob(center: center, bands: bands)
+            } else {
+                Self.fillCircle(center: center, radius: restRadius)
+            }
         } else {
-            // Template disc — system tints for the menu bar.
             NSColor.black.setFill()
             Self.fillCircle(center: center, radius: restRadius)
         }
 
-        image.unlockFocus()
+        NSGraphicsContext.restoreGraphicsState()
         image.isTemplate = !isEngaged
         return image
+    }
+
+    /// Soft 12-lobe burst on the 18 pt plate.
+    /// Band value −1…1 vs a 2 s average → diameter 6 / 12 / 18 pt.
+    private static func fillSpectrumBlob(center: CGPoint, bands: [CGFloat]) {
+        let count = MenuBarSpectrum.bandCount
+        let restRadius: CGFloat = 6
+        let swing: CGFloat = 3
+        let minRadius: CGFloat = 3
+        let maxRadius: CGFloat = 9
+        let steps = 96
+        let twoPi = CGFloat.pi * 2
+        let path = NSBezierPath()
+        path.lineJoinStyle = .round
+
+        for s in 0...steps {
+            let t = CGFloat(s) / CGFloat(steps) * twoPi
+            var r = restRadius
+            for i in 0..<count {
+                let deviation = i < bands.count ? min(1, max(-1, bands[i])) : 0
+                let theta = CGFloat.pi / 2 - CGFloat(i) * (twoPi / CGFloat(count))
+                var d = t - theta
+                if d > CGFloat.pi { d -= twoPi }
+                if d < -CGFloat.pi { d += twoPi }
+                let w = max(0, cos(d * CGFloat(count) / 2))
+                r += swing * deviation * pow(w, 2.15)
+            }
+            r = min(maxRadius, max(minRadius, r))
+            let point = CGPoint(x: center.x + cos(t) * r, y: center.y + sin(t) * r)
+            if s == 0 { path.move(to: point) } else { path.line(to: point) }
+        }
+        path.close()
+        path.fill()
     }
 
     private static func fillCircle(center: CGPoint, radius: CGFloat) {

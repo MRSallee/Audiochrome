@@ -10,6 +10,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     public var debugOptions = AudioEngineDebugOptions()
 
     private let processor = EQProcessor()
+    private let spectrum = MenuBarSpectrumAnalyzer()
+    private var spectrumMix = [Float](repeating: 0, count: 2048)
     private let stateLock = NSLock()
     private let meterLock = NSLock()
     private var meterLevel: Float = 0
@@ -59,6 +61,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         defer { meterLock.unlock() }
         return meterLevel
     }
+
+    public var spectrumLevels: [Float] { spectrum.levels }
 
     deinit {
         stop(reason: .appQuit)
@@ -375,6 +379,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         meterLock.lock()
         meterLevel = 0
         meterLock.unlock()
+        spectrum.reset()
     }
 
     // MARK: - IOProc
@@ -405,6 +410,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         // Icon animation follows the incoming mix, not the EQ'd output — otherwise
         // auto-pregain on a big boost (Giga Bass, etc.) drops the peak below the blob's floor.
         engine.updateMeter(from: outBuffers)
+        engine.updateSpectrum(from: outBuffers)
 
         // Planar (one buffer per channel, common for aggregates) vs interleaved.
         let planar = outBuffers.count > 1 && outBuffers.allSatisfy { $0.mNumberChannels <= 1 }
@@ -448,6 +454,51 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             }
         }
         return (peak, frameHint)
+    }
+
+    private func updateSpectrum(from buffers: UnsafeMutableAudioBufferListPointer) {
+        guard !buffers.isEmpty else { return }
+        let planar = buffers.count > 1 && buffers.allSatisfy { $0.mNumberChannels <= 1 }
+        if planar {
+            guard let left = buffers[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+            let frames = Int(buffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size))
+            if buffers.count > 1, let right = buffers[1].mData?.assumingMemoryBound(to: Float.self) {
+                let n = min(frames, Int(buffers[1].mDataByteSize / UInt32(MemoryLayout<Float>.size)))
+                ensureSpectrumMix(n)
+                for i in 0..<n { spectrumMix[i] = (left[i] + right[i]) * 0.5 }
+                spectrumMix.withUnsafeBufferPointer { buf in
+                    guard let base = buf.baseAddress else { return }
+                    spectrum.ingestMono(base, count: n, sampleRate: sampleRate)
+                }
+            } else {
+                spectrum.ingestMono(left, count: frames, sampleRate: sampleRate)
+            }
+            return
+        }
+
+        guard let ptr = buffers[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+        let channels = max(Int(buffers[0].mNumberChannels), 1)
+        let frames = Int(buffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size)) / channels
+        if channels == 1 {
+            spectrum.ingestMono(ptr, count: frames, sampleRate: sampleRate)
+            return
+        }
+        ensureSpectrumMix(frames)
+        for i in 0..<frames {
+            var sum: Float = 0
+            for c in 0..<channels { sum += ptr[i * channels + c] }
+            spectrumMix[i] = sum / Float(channels)
+        }
+        spectrumMix.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            spectrum.ingestMono(base, count: frames, sampleRate: sampleRate)
+        }
+    }
+
+    private func ensureSpectrumMix(_ frames: Int) {
+        if spectrumMix.count < frames {
+            spectrumMix = [Float](repeating: 0, count: max(frames, spectrumMix.count * 2))
+        }
     }
 
     private func updateMeter(from buffers: UnsafeMutableAudioBufferListPointer) {

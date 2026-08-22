@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.5.2** — EQ reminders post after Bluetooth output switches, once the profile is actually engaged.  
+> **v1.5.3** — Menu-bar icon is a 12-band FFT burst on the white plate, sized against each band’s recent average.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
