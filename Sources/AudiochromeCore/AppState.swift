@@ -33,6 +33,10 @@ public final class AppState: ObservableObject {
     /// Suppress output-change EQ banners until the launch notification has been considered.
     private var eqStatusNotificationsReady = false
     private var lastEQStatusNotifiedIdentityKey: String?
+    private var lastEQStatusNotifiedAt: Date?
+    /// Output changed (or launch) but the tap wasn’t engaged yet — post when it is.
+    private var pendingEQStatusNotifyKey: String?
+    private var eqStatusRetryWorkItems: [DispatchWorkItem] = []
 
     /// Invoked before system sheets/panels (e.g. Change Folder) so the menu can dismiss.
     public var onWillPresentModal: (() -> Void)?
@@ -431,6 +435,14 @@ public final class AppState: ObservableObject {
         if eqStatusNotificationsReady, previousDefaultKey != defaultIdentityKey {
             // Drop the previous output’s banner first; post again only if this one has a profile.
             EQStatusNotifier.shared.clearActiveEQ()
+            // Same headphones reconnecting (or BT HFP→A2DP / default flicker) must
+            // be allowed to notify again — lifetime dedupe hid those banners.
+            lastEQStatusNotifiedIdentityKey = nil
+            lastEQStatusNotifiedAt = nil
+            pendingEQStatusNotifyKey = defaultIdentityKey
+            notifyActiveEQStatus(reason: .outputChanged)
+            scheduleEQStatusNotifyRetries()
+        } else if eqStatusNotificationsReady, pendingEQStatusNotifyKey != nil {
             notifyActiveEQStatus(reason: .outputChanged)
         }
     }
@@ -443,20 +455,29 @@ public final class AppState: ObservableObject {
     /// Banner when EQ is actively engaged on the system default output (launch / output switch).
     private func notifyActiveEQStatus(reason: EQStatusNotifyReason) {
         guard config.activeEQReminders else { return }
-        // Armed config isn’t enough — only remind when EQ is actually processing.
-        guard isEQEngaged else { return }
         guard let hardwareKey = defaultIdentityKey else { return }
         let mappingKey = mappingIdentityKey(for: hardwareKey)
         let mapping = config.mapping(forIdentity: mappingKey)
         guard mapping.enabled, let filename = mapping.profileFilename else {
-            lastEQStatusNotifiedIdentityKey = hardwareKey
+            pendingEQStatusNotifyKey = nil
             return
         }
-        // Dedupe on hardware identity (launch retries + output switches in shared mode).
-        if hardwareKey == lastEQStatusNotifiedIdentityKey {
+        // Armed config isn’t enough — only remind when EQ is actually processing.
+        // Bluetooth taps often aren’t up on the first default-output callback.
+        guard isEQEngaged else {
+            pendingEQStatusNotifyKey = hardwareKey
+            return
+        }
+        // Swallow launch retries / Core Audio double-fires, not later reconnects.
+        if hardwareKey == lastEQStatusNotifiedIdentityKey,
+           let at = lastEQStatusNotifiedAt,
+           Date().timeIntervalSince(at) < 2.5 {
+            pendingEQStatusNotifyKey = nil
             return
         }
         lastEQStatusNotifiedIdentityKey = hardwareKey
+        lastEQStatusNotifiedAt = Date()
+        pendingEQStatusNotifyKey = nil
 
         let outputName: String
         if config.customEQPerDevice {
@@ -1325,6 +1346,25 @@ public final class AppState: ObservableObject {
         publishEngineDiagnostics()
         if case .needsAudioPermission = engineStatus {
             objectWillChange.send()
+        }
+        if eqStatusNotificationsReady,
+           pendingEQStatusNotifyKey == defaultIdentityKey,
+           isEQEngaged {
+            notifyActiveEQStatus(reason: .outputChanged)
+        }
+    }
+
+    private func scheduleEQStatusNotifyRetries() {
+        eqStatusRetryWorkItems.forEach { $0.cancel() }
+        eqStatusRetryWorkItems = []
+        for delay in [0.35, 1.0, 2.2] as [TimeInterval] {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                guard self.pendingEQStatusNotifyKey != nil else { return }
+                self.notifyActiveEQStatus(reason: .outputChanged)
+            }
+            eqStatusRetryWorkItems.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 }

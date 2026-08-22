@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.5.1** — Menu-bar disc follows the mix instead of freezing on compressed music, and panel height animations no longer snap.  
+> **v1.5.2** — EQ reminders post after Bluetooth output switches, once the profile is actually engaged.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
