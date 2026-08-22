@@ -179,21 +179,21 @@ final class StatusBarController: NSObject, ObservableObject {
 
         let frame = NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 280)
 
-        // Fixed tall hosting view, top-pinned via autoresizing. Never set its frame
-        // while the panel animates — that fights Core Animation and makes the menu slide.
-        // SwiftUI content top-aligns inside this box; the panel clips the rest.
-        let contentRoot = NSView(frame: frame)
+        // Fixed tall hosting view, top-pinned in layout so it follows window
+        // resize (including animator().setFrame) without mutating glass.
+        let contentRoot = TopPinnedHostView(frame: frame)
         contentRoot.autoresizingMask = [.width, .height]
+        contentRoot.hostingHeight = MenuMetrics.hostingHeight
         hosting.view.frame = NSRect(
             x: 0,
             y: frame.height - MenuMetrics.hostingHeight,
             width: frame.width,
             height: MenuMetrics.hostingHeight
         )
-        hosting.view.autoresizingMask = [.width, .minYMargin]
+        hosting.view.autoresizingMask = []
         contentRoot.addSubview(hosting.view)
-        panel.hostingView = hosting.view
-        panel.hostingHeight = MenuMetrics.hostingHeight
+        contentRoot.hostingView = hosting.view
+        panel.hostView = contentRoot
 
         if #available(macOS 26.0, *) {
             // Stock Wi‑Fi / Sound use Liquid Glass on macOS 26+.
@@ -511,24 +511,36 @@ final class StatusBarController: NSObject, ObservableObject {
     }
 }
 
-final class StatusMenuPanel: NSPanel {
-    /// Tall SwiftUI host, top-pinned. Call after a settled `setFrame`, never
-    /// from inside an animator — that races Core Animation (crash on edit).
+/// Pins the tall SwiftUI host to the top of the panel’s content as bounds change.
+/// Safe during `animator().setFrame` — only touches the host, never glass.
+final class TopPinnedHostView: NSView {
     var hostingView: NSView?
     var hostingHeight: CGFloat = 1600
+
+    override func layout() {
+        super.layout()
+        guard let hostingView else { return }
+        let next = NSRect(
+            x: 0,
+            y: bounds.height - hostingHeight,
+            width: bounds.width,
+            height: hostingHeight
+        )
+        if hostingView.frame != next {
+            hostingView.frame = next
+        }
+    }
+}
+
+final class StatusMenuPanel: NSPanel {
+    var hostView: TopPinnedHostView?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
     func pinHostingToTop() {
-        guard let hostingView, hostingView.superview != nil else { return }
-        let size = frame.size
-        hostingView.frame = NSRect(
-            x: 0,
-            y: size.height - hostingHeight,
-            width: size.width,
-            height: hostingHeight
-        )
+        hostView?.needsLayout = true
+        hostView?.layoutSubtreeIfNeeded()
     }
 
     /// Kill the WindowServer hairline that contours `hasShadow` on transparent panels.
@@ -632,6 +644,8 @@ final class PopoverChrome: ObservableObject {
     /// While SwiftUI swaps screens, refuse shrinks so a 0-fitting-size frame can’t collapse the panel.
     private var lockHeight = false
     private var overlayUnmountTask: Task<Void, Never>?
+    /// True while `animator().setFrame` is interpolating — `applyHeight` must not snap.
+    private var heightAnimationInFlight = false
 
     func attach(_ panel: StatusMenuPanel, anchoredFrame: @escaping (NSSize) -> NSRect) {
         self.panel = panel
@@ -799,14 +813,14 @@ final class PopoverChrome: ObservableObject {
             expectsAnimatedHeight = false
             animateHeight(to: h)
         } else {
-            applyHeight(h)
+            applyHeight(h, reanchor: false)
         }
     }
 
     func syncToMeasuredHeight() {
         let height = heightByScreen[presentedScreen] ?? measuredHeight
         guard height >= MenuMetrics.minMeasuredHeight else { return }
-        applyHeight(height)
+        applyHeight(height, reanchor: true)
     }
 
     /// Content height as SwiftUI last laid it out. The root view is deliberately greedy
@@ -822,30 +836,42 @@ final class PopoverChrome: ObservableObject {
         let height = max(MenuMetrics.minMeasuredHeight, height)
         guard panelIsShowing(), let panel, let frame = topPinnedFrame(for: height) else { return }
         restoreHeightFloor()
+        heightAnimationInFlight = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = pendingHeightDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(frame, display: true)
-        } completionHandler: { [weak panel] in
+        } completionHandler: { [weak self, weak panel] in
             Task { @MainActor in
+                self?.heightAnimationInFlight = false
                 panel?.pinHostingToTop()
                 panel?.invalidateShadow()
             }
         }
     }
 
-    /// Instant / structural resizes re-pin under the status item so a drifted top edge
-    /// can’t accumulate (e.g. menu open while Settings flips Custom EQ per device).
-    private func applyHeight(_ height: CGFloat) {
+    /// Instant / structural resizes. Measuring reports keep the current top edge
+    /// (`reanchor: false`) so they cannot cancel an in-flight height animation.
+    /// Open / permission sync may re-pin under the status item.
+    private func applyHeight(_ height: CGFloat, reanchor: Bool) {
         let height = max(MenuMetrics.minMeasuredHeight, height)
-        guard panelIsShowing(), let panel else { return }
+        guard panelIsShowing(), let panel, !heightAnimationInFlight else { return }
         let size = NSSize(width: MenuMetrics.width, height: height)
-        let frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
+        let frame: NSRect
+        if reanchor {
+            frame = anchoredFrame?(size) ?? topPinnedFrame(for: size.height) ?? panel.frame
+        } else if let pinned = topPinnedFrame(for: size.height) {
+            frame = pinned
+        } else {
+            return
+        }
         guard abs(panel.frame.height - frame.height) > 0.25
             || abs(panel.frame.width - frame.width) > 0.25
-            || abs(panel.frame.origin.x - frame.origin.x) > 0.25
-            || abs(panel.frame.origin.y - frame.origin.y) > 0.25
+            || (reanchor && (
+                abs(panel.frame.origin.x - frame.origin.x) > 0.25
+                || abs(panel.frame.origin.y - frame.origin.y) > 0.25
+            ))
         else { return }
         restoreHeightFloor()
         panel.setFrame(frame, display: true)

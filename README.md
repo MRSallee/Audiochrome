@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.5.0** — Status-item panel that sits under the icon, EQ locked without audio access, and Compare only on the live output.  
+> **v1.5.1** — Menu-bar disc follows the mix instead of freezing on compressed music, and panel height animations no longer snap.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

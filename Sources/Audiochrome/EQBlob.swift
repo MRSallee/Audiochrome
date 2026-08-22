@@ -13,8 +13,8 @@ enum EQBlob {
     private static let phaseRateFromLevel: CGFloat = 16.5
     static let animationFrameRate: CGFloat = 30
 
-    /// Ignore steady low-level audio; only the part above this drives the pulse.
-    private static let reactivityFloor: CGFloat = 0.2
+    /// Ignore true quiet; keep typical listening levels in the pulse.
+    private static let reactivityFloor: CGFloat = 0.10
     /// Peak emphasis after gating (higher → calmer on mid levels, punchier on beats).
     private static let reactivityGamma: CGFloat = 1.65
     private static let envelopeAttack: CGFloat = 0.55
@@ -60,13 +60,15 @@ enum EQBlob {
     /// Beat / voice pulse: expand on transients above the local loudness floor.
     /// Sustained busy sections raise the baseline, so the disc keeps dipping between hits
     /// instead of sitting at max.
+    /// - Returns: display-smoothed punch, unsmoothed pulse, and rising-edge onset
+    ///   (onset must be read before display smoothing or kicks never fire).
     static func advanceBeatPulse(
         fast: inout CGFloat,
         baseline: inout CGFloat,
         previousFast: inout CGFloat,
         display: inout CGFloat,
         rawLevel: CGFloat
-    ) -> CGFloat {
+    ) -> (display: CGFloat, pulse: CGFloat, onset: CGFloat) {
         let nextFast = advanceEnvelope(previous: fast, rawLevel: rawLevel)
         baseline += (nextFast - baseline) * baselineFollow
         if baseline < 0 { baseline = 0 }
@@ -87,7 +89,7 @@ enum EQBlob {
         let coeff = pulse > display ? displayAttack : displayRelease
         display += (pulse - display) * coeff
         if display < 0.02 { display = 0 }
-        return min(1, display)
+        return (min(1, display), pulse, onset)
     }
 
     static func innerRadius(outerRadius: CGFloat) -> CGFloat {
@@ -301,8 +303,9 @@ final class EQBlobMotion: ObservableObject {
     private var baseline: CGFloat = 0
     private var previousFast: CGFloat = 0
     private var display: CGFloat = 0
-    private var previousPunch: CGFloat = 0
-
+    /// Ungated loudness follow — punch-above-baseline is ~0 on compressed music.
+    private var follow: CGFloat = 0
+    private var phase: CGFloat = 0
     private var beating = false
     private var beatT: CGFloat = 0
 
@@ -311,22 +314,26 @@ final class EQBlobMotion: ObservableObject {
     private static let dipRadius: CGFloat = 3
     private static let peakRadius: CGFloat = 7
 
-    private static let beatDuration: CGFloat = 0.48
+    private static let beatDuration: CGFloat = 0.72
     /// Fraction of the beat: expand, then contract, then settle at 12pt.
     private static let peakEnd: CGFloat = 0.28
     private static let dipEnd: CGFloat = 0.62
 
-    private static let triggerOnset: CGFloat = 0.1
-    private static let triggerLevel: CGFloat = 0.2
-    /// Don’t retrigger until the settle phase (avoids chatter).
-    private static let retriggerAfter: CGFloat = 0.4
+    private static let triggerOnset: CGFloat = 0.05
+    private static let triggerLevel: CGFloat = 0.12
+    /// Don’t retrigger until well into the settle phase.
+    private static let retriggerAfter: CGFloat = 0.7
+    /// Slow idle pulse — the shared ring phaseRate is too busy for a solid disc.
+    private static let breatheRateBase: CGFloat = 1.15
+    private static let breatheRateFromLevel: CGFloat = 2.4
 
     func reset() {
         fast = 0
         baseline = 0
         previousFast = 0
         display = 0
-        previousPunch = 0
+        follow = 0
+        phase = 0
         beating = false
         beatT = 0
         level = 0
@@ -334,7 +341,7 @@ final class EQBlobMotion: ObservableObject {
     }
 
     func tick(rawLevel: CGFloat) {
-        let punch = EQBlob.advanceBeatPulse(
+        let (punch, pulse, onset) = EQBlob.advanceBeatPulse(
             fast: &fast,
             baseline: &baseline,
             previousFast: &previousFast,
@@ -343,11 +350,14 @@ final class EQBlobMotion: ObservableObject {
         )
         level = punch
 
-        let onset = punch - previousPunch
-        previousPunch = punch
+        // Drive size from the meter itself. Punch is excess-above-baseline and
+        // goes to 0 on loud, even mixes — which is most streaming music.
+        let target = min(1, max(0, rawLevel))
+        follow += (target - follow) * (target > follow ? 0.16 : 0.07)
+        if follow < 0.01 { follow = 0 }
 
-        let audible = EQBlob.reactivity(from: rawLevel) > 0.02 || punch > 0.04 || fast > 0.04
-        let canTrigger = audible && onset > Self.triggerOnset && punch > Self.triggerLevel
+        let audible = follow > 0.03 || rawLevel > 0.04
+        let canTrigger = audible && onset > Self.triggerOnset && pulse > Self.triggerLevel
         if canTrigger, !beating || beatT >= Self.retriggerAfter {
             beating = true
             beatT = 0
@@ -359,13 +369,27 @@ final class EQBlobMotion: ObservableObject {
             if beatT >= 1 {
                 beating = false
                 beatT = 0
-                discRadius = Self.restRadius
+                discRadius = Self.livingRadius(follow: follow, phase: &phase)
             } else {
                 discRadius = Self.radius(at: beatT)
             }
+        } else if audible {
+            discRadius = Self.livingRadius(follow: follow, phase: &phase)
         } else {
+            phase = 0
             discRadius = Self.restRadius
         }
+    }
+
+    /// Loudness sets the center size; phase keeps it moving when the meter is flat.
+    private static func livingRadius(follow: CGFloat, phase: inout CGFloat) -> CGFloat {
+        let x = min(1, max(0, follow))
+        let rate = breatheRateBase + x * breatheRateFromLevel
+        phase += rate / EQBlob.animationFrameRate
+        if phase > .pi * 2 { phase -= .pi * 2 }
+        let center = 4.8 + x * 2.0
+        let wobble = sin(phase) * (0.22 + x * 0.38)
+        return center + wobble
     }
 
     /// 12 → 14 → 6 → 12 over one beat.

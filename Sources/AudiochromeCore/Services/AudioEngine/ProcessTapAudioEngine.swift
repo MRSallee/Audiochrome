@@ -451,9 +451,24 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     }
 
     private func updateMeter(from buffers: UnsafeMutableAudioBufferListPointer) {
-        let sample = peak(from: buffers)
-        // Soft knee so typical music (often <0.3 peak) still animates visibly.
-        let shaped = min(1, pow(sample.peak * 1.8, 0.65))
+        var peak: Float = 0
+        var sumSq: Float = 0
+        var count = 0
+        for buffer in buffers {
+            guard let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let n = Int(buffer.mDataByteSize / UInt32(MemoryLayout<Float>.size))
+            for i in 0..<n {
+                let s = ptr[i]
+                let a = abs(s)
+                if a > peak { peak = a }
+                sumSq += s * s
+            }
+            count += n
+        }
+        let rms = count > 0 ? sqrt(sumSq / Float(count)) : 0
+        // Peak for hits; RMS so compressed / dense mixes still move the icon.
+        let mixed = max(peak, rms * 2.6)
+        let shaped = min(1, pow(mixed * 1.8, 0.65))
 
         meterLock.lock()
         if shaped > meterLevel {
