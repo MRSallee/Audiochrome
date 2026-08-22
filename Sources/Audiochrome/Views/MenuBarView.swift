@@ -1162,6 +1162,9 @@ private struct OutputEQPanel: View {
                     ActiveProfileRow(
                         title: profileTitle,
                         accent: accent,
+                        colorHex: mapping.profileFilename.map {
+                            appState.colorHex(forProfile: $0, forIdentity: identityKey)
+                        },
                         hasProfile: hasProfile,
                         showColorPicker: showColorPicker,
                         colorPicker: { colorPopover },
@@ -1253,10 +1256,10 @@ private struct OutputEQPanel: View {
                             ForEach(otherProfiles) { profile in
                                 OtherProfileRow(
                                     profile: profile,
-                                    color: appState.colorHex(
+                                    colorHex: appState.colorHex(
                                         forProfile: profile.filename,
                                         forIdentity: identityKey
-                                    ).profileColor(.ui, scheme: colorScheme)
+                                    )
                                 ) {
                         popoverChrome.animatingDisclosure {
                             appState.setProfile(forIdentity: identityKey, filename: profile.filename)
@@ -1584,6 +1587,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
     @EnvironmentObject private var appState: AppState
     let title: String
     let accent: Color
+    var colorHex: String? = nil
     let hasProfile: Bool
     @Binding var showColorPicker: Bool
     @ViewBuilder let colorPicker: () -> ColorPicker
@@ -1604,9 +1608,9 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     showColorPicker = true
                 } label: {
                     ProfileMarkView(
-                        accent: accent,
+                        colorHex: colorHex,
                         isSelected: hasProfile,
-                        showsDisc: hasProfile
+                        showsBars: hasProfile
                     )
                 }
                 .buttonStyle(.plain)
@@ -1651,7 +1655,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
 
 private struct OtherProfileRow: View {
     let title: String
-    let color: Color
+    let colorHex: String
     var isEnabled: Bool = true
     let action: () -> Void
     var onDelete: (() -> Void)? = nil
@@ -1660,12 +1664,12 @@ private struct OtherProfileRow: View {
 
     init(
         profile: ProfileFile,
-        color: Color,
+        colorHex: String,
         action: @escaping () -> Void,
         onDelete: (() -> Void)? = nil
     ) {
         self.title = profile.displayName
-        self.color = color
+        self.colorHex = colorHex
         self.isEnabled = true
         self.action = action
         self.onDelete = onDelete
@@ -1673,13 +1677,13 @@ private struct OtherProfileRow: View {
 
     init(
         title: String,
-        color: Color,
+        colorHex: String,
         isEnabled: Bool = true,
         action: @escaping () -> Void,
         onDelete: (() -> Void)? = nil
     ) {
         self.title = title
-        self.color = color
+        self.colorHex = colorHex
         self.isEnabled = isEnabled
         self.action = action
         self.onDelete = onDelete
@@ -1693,7 +1697,7 @@ private struct OtherProfileRow: View {
                     .padding(.horizontal, MenuChrome.highlightInset)
 
                 HStack(spacing: 10) {
-                    ProfileMarkView(accent: color, isSelected: false)
+                    ProfileMarkView(colorHex: colorHex, isSelected: false)
                     Text(title)
                         .font(MenuChrome.bodyFont)
                         .fontWeight(.regular)

@@ -39,7 +39,7 @@ public protocol AudioEngine: AnyObject {
     var status: AudioEngineStatus { get }
     /// Smoothed output magnitude 0…1 for UI (menu-bar animation). Audio-thread safe to read.
     var outputLevel: Float { get }
-    /// 12-band FFT envelope (20 Hz … 20 kHz), 0…1. Audio-thread safe to read.
+    /// Menu-bar FFT envelope (one value per active style band), 0…1. Audio-thread safe to read.
     var spectrumLevels: [Float] { get }
     /// Accuracy A/B knobs; applied on the next start/restart.
     var debugOptions: AudioEngineDebugOptions { get set }

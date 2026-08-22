@@ -285,16 +285,17 @@ final class StatusBarController: NSObject, ObservableObject {
         let button = statusItem?.button
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
         let hex = appState.activeProfileColorHex
-        // Engaged icon sits on a white plate — match in-app mark (`.ui` light), not the
-        // pale menuBarDark ramp meant for drawing directly on a dark menu bar.
+        // Engaged icon uses the mid swatch so the plate matches the picker.
         let paint = hex.map { ProfileColorPalette.nsColor($0, role: .ui, dark: false) }
         let bands = animate
             ? appState.audioEngine.spectrumLevels.map { CGFloat($0) }
             : []
         button?.image = StatusIconImage.make(
             color: paint ?? .black,
+            barInk: hex.map { ProfileColorPalette.barInk(for: $0) },
             isEngaged: appState.isEQEngaged,
             bands: bands,
+            presence: animate ? CGFloat(appState.audioEngine.outputLevel) : 0,
             animated: animate
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
@@ -555,8 +556,10 @@ final class StatusMenuPanel: NSPanel {
 enum StatusIconImage {
     static func make(
         color: NSColor,
+        barInk: NSColor? = nil,
         isEngaged: Bool,
         bands: [CGFloat] = [],
+        presence: CGFloat = 0,
         animated: Bool = false,
         size: CGFloat = 18
     ) -> NSImage {
@@ -591,17 +594,30 @@ enum StatusIconImage {
         let restRadius: CGFloat = 6
 
         if isEngaged {
-            NSColor.white.setFill()
-            NSBezierPath(ovalIn: plateRect).fill()
-            color.setFill()
-            if animated {
-                Self.fillSpectrumBlob(center: center, bands: bands)
-            } else {
-                Self.fillCircle(center: center, radius: restRadius)
+            switch MenuBarSpectrum.style {
+            case .star:
+                NSColor.white.setFill()
+                NSBezierPath(ovalIn: plateRect).fill()
+                color.setFill()
+                if animated {
+                    Self.fillSpectrumStar(center: center, bands: bands, presence: presence)
+                } else {
+                    Self.fillCircle(center: center, radius: restRadius)
+                }
+            case .bars:
+                color.setFill()
+                NSBezierPath(ovalIn: plateRect).fill()
+                (barInk ?? Self.contrastingInk(for: color)).setFill()
+                Self.fillSpectrumBars(
+                    center: center,
+                    bands: bands,
+                    presence: presence,
+                    animated: animated
+                )
             }
         } else {
             NSColor.black.setFill()
-            Self.fillCircle(center: center, radius: restRadius)
+            Self.fillKnockoutBars(plate: plateRect, center: center)
         }
 
         NSGraphicsContext.restoreGraphicsState()
@@ -609,37 +625,125 @@ enum StatusIconImage {
         return image
     }
 
-    /// Soft 12-lobe burst on the 18 pt plate.
-    /// Band value −1…1 vs a 2 s average → diameter 6 / 12 / 18 pt.
-    private static func fillSpectrumBlob(center: CGPoint, bands: [CGFloat]) {
+    /// 12 evenly spaced rounded lobes. 20 Hz at 12 o’clock, clockwise to 20 kHz.
+    /// No audio → 12 pt circle. Playing tips 6…18 pt; valleys follow the quieter neighbor.
+    private static func fillSpectrumStar(center: CGPoint, bands: [CGFloat], presence: CGFloat) {
+        var p = min(1, max(0, presence / 0.22))
+        p = p * p * (3 - 2 * p)
+        let circleRadius: CGFloat = 6
+        if p < 0.02 {
+            fillCircle(center: center, radius: circleRadius)
+            return
+        }
+
         let count = MenuBarSpectrum.bandCount
-        let restRadius: CGFloat = 6
-        let swing: CGFloat = 3
-        let minRadius: CGFloat = 3
-        let maxRadius: CGFloat = 9
-        let steps = 96
+        let restRadius: CGFloat = 3.2
+        let maxRadius: CGFloat = 8.4
         let twoPi = CGFloat.pi * 2
+        let sector = twoPi / CGFloat(count)
+        let steps = 144
+
+        func tipRadius(_ i: Int) -> CGFloat {
+            let idx = ((i % count) + count) % count
+            let amount = idx < bands.count ? min(1, max(0, bands[idx])) : 0
+            let playingTip = restRadius + (maxRadius - restRadius) * amount
+            return circleRadius + (playingTip - circleRadius) * p
+        }
+
+        func valleyBetween(_ i: Int) -> CGFloat {
+            let web = min(tipRadius(i), tipRadius(i + 1)) * 0.7
+            let floor = circleRadius + (2.5 - circleRadius) * p
+            return max(floor, web)
+        }
+
         let path = NSBezierPath()
         path.lineJoinStyle = .round
+        path.lineCapStyle = .round
 
         for s in 0...steps {
             let t = CGFloat(s) / CGFloat(steps) * twoPi
-            var r = restRadius
-            for i in 0..<count {
-                let deviation = i < bands.count ? min(1, max(-1, bands[i])) : 0
-                let theta = CGFloat.pi / 2 - CGFloat(i) * (twoPi / CGFloat(count))
-                var d = t - theta
-                if d > CGFloat.pi { d -= twoPi }
-                if d < -CGFloat.pi { d += twoPi }
-                let w = max(0, cos(d * CGFloat(count) / 2))
-                r += swing * deviation * pow(w, 2.15)
+            var clock = CGFloat.pi / 2 - t
+            if clock < 0 { clock += twoPi }
+            let raw = clock / sector
+            let i0 = Int(floor(raw))
+            let local = raw - CGFloat(i0)
+            let tip: CGFloat
+            let valley: CGFloat
+            let u: CGFloat
+            if local <= 0.5 {
+                tip = tipRadius(i0)
+                valley = valleyBetween(i0)
+                u = local * 2
+            } else {
+                tip = tipRadius(i0 + 1)
+                valley = valleyBetween(i0)
+                u = (1 - local) * 2
             }
-            r = min(maxRadius, max(minRadius, r))
+            // Cosine cap: flat at the tip, soft webbing in the valley.
+            let w = 0.5 * (1 + cos(min(1, max(0, u)) * .pi))
+            let r = valley + (tip - valley) * w
             let point = CGPoint(x: center.x + cos(t) * r, y: center.y + sin(t) * r)
             if s == 0 { path.move(to: point) } else { path.line(to: point) }
         }
         path.close()
         path.fill()
+    }
+
+    /// White on dark plates, black on light — whichever contrasts more.
+    private static func contrastingInk(for color: NSColor) -> NSColor {
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        func linear(_ x: CGFloat) -> CGFloat {
+            x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4)
+        }
+        let luminance =
+            0.2126 * linear(rgb.redComponent) +
+            0.7152 * linear(rgb.greenComponent) +
+            0.0722 * linear(rgb.blueComponent)
+        return luminance > 0.55 ? .black : .white
+    }
+
+    /// White/template plate with rest bars cut out (even-odd).
+    private static func fillKnockoutBars(plate: NSRect, center: CGPoint) {
+        let path = NSBezierPath(ovalIn: plate)
+        path.windingRule = .evenOdd
+        for rect in MenuBarBarsMark.barFrames(center: center) {
+            path.append(NSBezierPath(roundedRect: rect, xRadius: MenuBarBarsMark.barWidth / 2, yRadius: MenuBarBarsMark.barWidth / 2))
+        }
+        path.fill()
+    }
+
+    /// Five 2 pt capsules, 0.5 pt gaps. Rest is the full 6 / 10 / 12 / 10 / 6 silhouette.
+    private static func fillSpectrumBars(
+        center: CGPoint,
+        bands: [CGFloat],
+        presence: CGFloat,
+        animated: Bool
+    ) {
+        var p = min(1, max(0, presence / 0.22))
+        p = p * p * (3 - 2 * p)
+        let atRest = !animated || p < 0.02
+
+        let count = MenuBarBarsMark.count
+        let barWidth = MenuBarBarsMark.barWidth
+        let gap = MenuBarBarsMark.gap
+        let totalWidth = CGFloat(count) * barWidth + CGFloat(count - 1) * gap
+        let firstX = center.x - totalWidth / 2 + barWidth / 2
+        let maxHeights = MenuBarBarsMark.heights
+
+        for i in 0..<count {
+            let amount = atRest ? 1 : (i < bands.count ? min(1, max(0, bands[i])) : 0)
+            let x = firstX + CGFloat(i) * (barWidth + gap)
+            let maxHalf = (i < maxHeights.count ? maxHeights[i] : 12) / 2
+            let minHalf: CGFloat = 1
+            let half = minHalf + (maxHalf - minHalf) * amount
+            let rect = NSRect(
+                x: x - barWidth / 2,
+                y: center.y - half,
+                width: barWidth,
+                height: half * 2
+            )
+            NSBezierPath(roundedRect: rect, xRadius: barWidth / 2, yRadius: barWidth / 2).fill()
+        }
     }
 
     private static func fillCircle(center: CGPoint, radius: CGFloat) {

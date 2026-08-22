@@ -66,67 +66,94 @@ public struct ProfileColorFamily: Equatable, Sendable {
     public var menuBarLight: String
     /// Extra-bright — dark wallpaper showing through the menu bar.
     public var menuBarDark: String
+    /// Menu-bar bar ink on this plate (`true` = black, `false` = white).
+    public var darkBars: Bool
 }
 
 /// Preset swatches for profile color mapping.
 public enum ProfileColorPalette {
-    /// Eight hues, spaced around the wheel. Menu-bar ramps are more extreme than UI/plot.
+    /// Five neon plates (yellow, cyan, purple, orange, green).
     public static let families: [ProfileColorFamily] = [
         ProfileColorFamily(
-            canonical: "#EF4444", deep: "#DC2626", mid: "#EF4444", bright: "#F87171",
-            menuBarLight: "#B91C1C", menuBarDark: "#FF6B6B"
+            canonical: "#FFEE33", deep: "#E6D400", mid: "#FFEE33", bright: "#FFF566",
+            menuBarLight: "#E6D400", menuBarDark: "#FFF566", darkBars: true
         ),
         ProfileColorFamily(
-            canonical: "#F97316", deep: "#EA580C", mid: "#F97316", bright: "#FB923C",
-            menuBarLight: "#C2410C", menuBarDark: "#FFB020"
+            canonical: "#33DDFF", deep: "#00C4E6", mid: "#33DDFF", bright: "#7AEBFF",
+            menuBarLight: "#00C4E6", menuBarDark: "#7AEBFF", darkBars: true
         ),
         ProfileColorFamily(
-            canonical: "#EAB308", deep: "#CA8A04", mid: "#EAB308", bright: "#FACC15",
-            menuBarLight: "#A16207", menuBarDark: "#FFE066"
+            canonical: "#E566FF", deep: "#D14EF0", mid: "#E566FF", bright: "#EE99FF",
+            menuBarLight: "#D14EF0", menuBarDark: "#EE99FF", darkBars: false
         ),
         ProfileColorFamily(
-            canonical: "#22C55E", deep: "#16A34A", mid: "#22C55E", bright: "#4ADE80",
-            menuBarLight: "#15803D", menuBarDark: "#5EEC8A"
+            canonical: "#FF7733", deep: "#F05A10", mid: "#FF7733", bright: "#FF9A5C",
+            menuBarLight: "#F05A10", menuBarDark: "#FF9A5C", darkBars: false
         ),
         ProfileColorFamily(
-            canonical: "#14B8A6", deep: "#0F766E", mid: "#14B8A6", bright: "#2DD4BF",
-            menuBarLight: "#0F766E", menuBarDark: "#5EEAD4"
-        ),
-        ProfileColorFamily(
-            canonical: "#3B82F6", deep: "#2563EB", mid: "#3B82F6", bright: "#60A5FA",
-            menuBarLight: "#1D4ED8", menuBarDark: "#93C5FD"
-        ),
-        ProfileColorFamily(
-            canonical: "#8B5CF6", deep: "#7C3AED", mid: "#8B5CF6", bright: "#A78BFA",
-            menuBarLight: "#6D28D9", menuBarDark: "#C4B5FD"
-        ),
-        ProfileColorFamily(
-            canonical: "#EC4899", deep: "#DB2777", mid: "#EC4899", bright: "#F472B6",
-            menuBarLight: "#BE185D", menuBarDark: "#FF7AB8"
+            canonical: "#33FF99", deep: "#00E67A", mid: "#33FF99", bright: "#6AFFB5",
+            menuBarLight: "#00E67A", menuBarDark: "#6AFFB5", darkBars: true
         ),
     ]
 
     public static var swatches: [String] { families.map(\.canonical) }
 
-    /// Neon (v1.2) and five-swatch jewel (v1.3) identities.
+    /// Earlier 8-hue and alternate neon spellings.
     private static let legacyCanonical: [String: String] = [
-        "#FFEE33": "#EAB308",
-        "#33DDFF": "#14B8A6",
-        "#E666FF": "#8B5CF6",
-        "#FF7733": "#F97316",
-        "#33FF99": "#22C55E",
-        "#F59E0B": "#EAB308",
-        "#D97706": "#EAB308",
-        "#FBBF24": "#EAB308",
-        "#06B6D4": "#14B8A6",
-        "#0E7490": "#14B8A6",
-        "#22D3EE": "#14B8A6",
-        "#6D28D9": "#8B5CF6",
-        "#C4B5FD": "#8B5CF6",
-        "#10B981": "#22C55E",
-        "#047857": "#22C55E",
-        "#34D399": "#22C55E",
+        "#E666FF": "#E566FF",
+        "#EF4444": "#FF7733",
+        "#DC2626": "#FF7733",
+        "#F87171": "#FF7733",
+        "#B91C1C": "#FF7733",
+        "#FF6B6B": "#FF7733",
+        "#F97316": "#FF7733",
+        "#EA580C": "#FF7733",
+        "#FB923C": "#FF7733",
+        "#C2410C": "#FF7733",
+        "#FFB020": "#FF7733",
+        "#EAB308": "#FFEE33",
+        "#CA8A04": "#FFEE33",
+        "#FACC15": "#FFEE33",
+        "#A16207": "#FFEE33",
+        "#FFE066": "#FFEE33",
+        "#F59E0B": "#FFEE33",
+        "#D97706": "#FFEE33",
+        "#FBBF24": "#FFEE33",
+        "#22C55E": "#33FF99",
+        "#16A34A": "#33FF99",
+        "#4ADE80": "#33FF99",
+        "#15803D": "#33FF99",
+        "#5EEC8A": "#33FF99",
+        "#10B981": "#33FF99",
+        "#047857": "#33FF99",
+        "#34D399": "#33FF99",
+        "#14B8A6": "#33DDFF",
+        "#0F766E": "#33DDFF",
+        "#2DD4BF": "#33DDFF",
+        "#5EEAD4": "#33DDFF",
+        "#06B6D4": "#33DDFF",
+        "#0E7490": "#33DDFF",
+        "#22D3EE": "#33DDFF",
+        "#3B82F6": "#33DDFF",
+        "#2563EB": "#33DDFF",
+        "#60A5FA": "#33DDFF",
+        "#1D4ED8": "#33DDFF",
+        "#93C5FD": "#33DDFF",
+        "#8B5CF6": "#E566FF",
+        "#7C3AED": "#E566FF",
+        "#A78BFA": "#E566FF",
+        "#6D28D9": "#E566FF",
+        "#C4B5FD": "#E566FF",
+        "#EC4899": "#E566FF",
+        "#DB2777": "#E566FF",
+        "#F472B6": "#E566FF",
+        "#BE185D": "#E566FF",
+        "#FF7AB8": "#E566FF",
     ]
+
+    public static func barInk(for hex: String) -> NSColor {
+        family(for: hex).darkBars ? .black : .white
+    }
 
     public static func canonical(_ hex: String) -> String {
         family(for: hex).canonical

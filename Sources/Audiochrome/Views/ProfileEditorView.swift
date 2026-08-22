@@ -110,7 +110,7 @@ struct ProfileEditorView: View {
                 showColorPicker = true
             } label: {
                 ProfileMarkView(
-                    accent: draft.colorHex.profileColor(.ui, scheme: colorScheme),
+                    colorHex: draft.colorHex,
                     isSelected: true
                 )
             }
