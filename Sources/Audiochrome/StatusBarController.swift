@@ -16,6 +16,10 @@ final class StatusBarController: NSObject, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var appearanceObservation: NSKeyValueObservation?
     private var animationTimer: Timer?
+    /// Linear 0…1 clock over 500 ms; drawing uses ease-out of this.
+    private var restExpandClock: CGFloat = 1
+    /// 0 = follow the spectrum (or collapsed dots). 1 = full rest silhouette.
+    private var restExpand: CGFloat = 1
     private var globalDismissMonitor: Any?
     private var localDismissMonitor: Any?
     private var statusItemClickMonitor: Any?
@@ -268,6 +272,8 @@ final class StatusBarController: NSObject, ObservableObject {
         } else {
             animationTimer?.invalidate()
             animationTimer = nil
+            restExpandClock = 1
+            restExpand = 1
             EQBlobMotion.shared.reset()
         }
     }
@@ -281,6 +287,24 @@ final class StatusBarController: NSObject, ObservableObject {
         refreshIcon()
     }
 
+    private func updateRestExpand(animate: Bool, presence: CGFloat) {
+        if !animate {
+            restExpandClock = 1
+            restExpand = 1
+            return
+        }
+        var p = min(1, max(0, presence / 0.22))
+        p = p * p * (3 - 2 * p)
+        if p < 0.02 {
+            restExpandClock = min(1, restExpandClock + 1 / (EQBlob.animationFrameRate * 0.5))
+            let x = restExpandClock
+            restExpand = 1 - (1 - x) * (1 - x)
+        } else {
+            restExpandClock = 0
+            restExpand = 0
+        }
+    }
+
     func refreshIcon() {
         let button = statusItem?.button
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
@@ -290,12 +314,15 @@ final class StatusBarController: NSObject, ObservableObject {
         let bands = animate
             ? appState.audioEngine.spectrumLevels.map { CGFloat($0) }
             : []
+        let presence = animate ? CGFloat(appState.audioEngine.outputLevel) : 0
+        updateRestExpand(animate: animate, presence: presence)
         button?.image = StatusIconImage.make(
             color: paint ?? .black,
             barInk: hex.map { ProfileColorPalette.barInk(for: $0) },
             isEngaged: appState.isEQEngaged,
             bands: bands,
-            presence: animate ? CGFloat(appState.audioEngine.outputLevel) : 0,
+            presence: presence,
+            restExpand: restExpand,
             animated: animate
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
@@ -305,6 +332,10 @@ final class StatusBarController: NSObject, ObservableObject {
     }
 
     // MARK: - Present / dismiss
+
+    func presentMenuIfNeeded() {
+        openMenu()
+    }
 
     private func openMenu() {
         guard !isPresented else { return }
@@ -560,6 +591,7 @@ enum StatusIconImage {
         isEngaged: Bool,
         bands: [CGFloat] = [],
         presence: CGFloat = 0,
+        restExpand: CGFloat = 1,
         animated: Bool = false,
         size: CGFloat = 18
     ) -> NSImage {
@@ -611,7 +643,7 @@ enum StatusIconImage {
                 Self.fillSpectrumBars(
                     center: center,
                     bands: bands,
-                    presence: presence,
+                    restExpand: restExpand,
                     animated: animated
                 )
             }
@@ -716,12 +748,10 @@ enum StatusIconImage {
     private static func fillSpectrumBars(
         center: CGPoint,
         bands: [CGFloat],
-        presence: CGFloat,
+        restExpand: CGFloat,
         animated: Bool
     ) {
-        var p = min(1, max(0, presence / 0.22))
-        p = p * p * (3 - 2 * p)
-        let atRest = !animated || p < 0.02
+        let expand = !animated ? 1 : min(1, max(0, restExpand))
 
         let count = MenuBarBarsMark.count
         let barWidth = MenuBarBarsMark.barWidth
@@ -731,7 +761,8 @@ enum StatusIconImage {
         let maxHeights = MenuBarBarsMark.heights
 
         for i in 0..<count {
-            let amount = atRest ? 1 : (i < bands.count ? min(1, max(0, bands[i])) : 0)
+            let live = i < bands.count ? min(1, max(0, bands[i])) : 0
+            let amount = live + (1 - live) * expand
             let x = firstX + CGFloat(i) * (barWidth + gap)
             let maxHalf = (i < maxHeights.count ? maxHeights[i] : 12) / 2
             let minHalf: CGFloat = 1
@@ -778,6 +809,7 @@ enum MenuPanelScreen: Hashable {
     case home
     case settings
     case eqEditor
+    case effectsEditor
 }
 
 @MainActor
@@ -1088,6 +1120,8 @@ private struct MenuBarRoot: View {
     @ObservedObject var appState: AppState
     @ObservedObject var chrome: PopoverChrome
     @Environment(\.colorScheme) private var colorScheme
+    /// Keep the outgoing editor mounted while `effectsEditorKind` is already nil.
+    @State private var lingeringEffectsKind: EffectKind?
 
     private var homeIsInteractive: Bool { chrome.overlayProgress < 0.98 }
 
@@ -1121,6 +1155,19 @@ private struct MenuBarRoot: View {
             // so the panel's height comes from the measurement above, never from asking
             // the hosting controller what size it wants.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onAppear {
+                if let kind = appState.effectsEditorKind {
+                    lingeringEffectsKind = kind
+                }
+            }
+            .onChange(of: appState.effectsEditorKind) { _, new in
+                if let new { lingeringEffectsKind = new }
+            }
+            .onChange(of: chrome.mountedOverlay) { _, screen in
+                if screen != .effectsEditor {
+                    lingeringEffectsKind = appState.effectsEditorKind
+                }
+            }
     }
 
     @ViewBuilder
@@ -1145,6 +1192,13 @@ private struct MenuBarRoot: View {
             SettingsView(appState: appState)
         case .eqEditor:
             ProfileEditorView(appState: appState)
+        case .effectsEditor:
+            switch appState.effectsEditorKind ?? lingeringEffectsKind {
+            case .subharmonic:
+                SubharmonicEditorView(appState: appState)
+            case .crossfeed, .none:
+                CrossfeedEditorView(appState: appState)
+            }
         }
     }
 

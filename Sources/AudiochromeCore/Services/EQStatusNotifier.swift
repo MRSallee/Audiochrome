@@ -18,6 +18,8 @@ public final class EQStatusNotifier: NSObject {
     private let center = UNUserNotificationCenter.current()
     private var didConfigure = false
     private var clearWorkItem: DispatchWorkItem?
+    /// Clicking the banner. Set by the app (opens the menu panel).
+    public var onSelect: (() -> Void)?
 
     private override init() {
         super.init()
@@ -46,16 +48,18 @@ public final class EQStatusNotifier: NSObject {
         outputName: String,
         profileDisplayName: String,
         folderName: String,
-        colorHex: String
+        colorHex: String,
+        effectsLabel: String = ""
     ) {
         configure()
 
         let payload = Payload(
             outputName: outputName,
             profileDisplayName: profileDisplayName,
-            folderName: folderName,
-            colorHex: colorHex
+            colorHex: colorHex,
+            effectsLabel: effectsLabel
         )
+        _ = folderName
         center.getNotificationSettings { [weak self] settings in
             Task { @MainActor in
                 guard let self else { return }
@@ -94,7 +98,8 @@ public final class EQStatusNotifier: NSObject {
         outputName: String,
         profileDisplayName: String,
         folderName: String,
-        colorHex: String
+        colorHex: String,
+        effectsLabel: String = ""
     ) {
         configure()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -102,7 +107,8 @@ public final class EQStatusNotifier: NSObject {
                 outputName: outputName,
                 profileDisplayName: profileDisplayName,
                 folderName: folderName,
-                colorHex: colorHex
+                colorHex: colorHex,
+                effectsLabel: effectsLabel
             )
         }
     }
@@ -110,8 +116,8 @@ public final class EQStatusNotifier: NSObject {
     private struct Payload {
         let outputName: String
         let profileDisplayName: String
-        let folderName: String
         let colorHex: String
+        let effectsLabel: String
     }
 
     private func requestAuthorizationAndPost(_ payload: Payload) {
@@ -130,12 +136,14 @@ public final class EQStatusNotifier: NSObject {
 
     private func post(_ payload: Payload) {
         let content = UNMutableNotificationContent()
-        // Row 1 = profile, row 2 = folder, row 3 = output.
-        content.title = payload.profileDisplayName
-        content.subtitle = payload.folderName
+        let trimmedEffects = payload.effectsLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedEffects.isEmpty {
+            content.title = payload.profileDisplayName
+        } else {
+            content.title = "\(payload.profileDisplayName) · \(trimmedEffects)"
+        }
         content.body = payload.outputName
-
-        if let attachment = makeColorCircleAttachment(hex: payload.colorHex) {
+        if let attachment = makeProfileMarkAttachment(hex: payload.colorHex) {
             content.attachments = [attachment]
         }
 
@@ -169,28 +177,9 @@ public final class EQStatusNotifier: NSObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.clearAfter, execute: work)
     }
 
-    /// Temporary PNG used as the notification thumbnail / icon accent.
-    private func makeColorCircleAttachment(hex: String) -> UNNotificationAttachment? {
-        let size: CGFloat = 128
-        let image = NSImage(size: NSSize(width: size, height: size))
-        image.lockFocus()
-        NSColor.clear.setFill()
-        NSRect(x: 0, y: 0, width: size, height: size).fill()
-        (Color(hex: hex).map { NSColor($0) } ?? .systemBlue).setFill()
-        let inset: CGFloat = 8
-        NSBezierPath(ovalIn: NSRect(
-            x: inset,
-            y: inset,
-            width: size - inset * 2,
-            height: size - inset * 2
-        )).fill()
-        image.unlockFocus()
-
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:])
-        else { return nil }
-
+    /// Profile-color plate + rest bars for the trailing thumbnail.
+    private func makeProfileMarkAttachment(hex: String) -> UNNotificationAttachment? {
+        guard let png = renderProfileMarkPNG(hex: hex) else { return nil }
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("AudiochromeNotifications", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -199,14 +188,55 @@ public final class EQStatusNotifier: NSObject {
         do {
             try png.write(to: url, options: .atomic)
             return try UNNotificationAttachment(
-                identifier: "profile-color",
+                identifier: "profile-mark",
                 url: url,
                 options: [UNNotificationAttachmentOptionsTypeHintKey: "public.png"]
             )
         } catch {
-            log.error("Color circle attachment failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Profile mark attachment failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    private func renderProfileMarkPNG(hex: String) -> Data? {
+        let pixels = 256
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixels,
+            pixelsHigh: pixels,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return nil }
+        rep.size = NSSize(width: pixels, height: pixels)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.shouldAntialias = true
+
+        let bounds = NSRect(x: 0, y: 0, width: CGFloat(pixels), height: CGFloat(pixels))
+        NSColor.clear.setFill()
+        bounds.fill()
+        ProfileColorPalette.nsColor(hex, role: .ui, dark: false).setFill()
+        NSBezierPath(ovalIn: bounds).fill()
+
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let scale = CGFloat(pixels) / 18
+        ProfileColorPalette.barInk(for: hex).setFill()
+        for rect in MenuBarBarsMark.barFrames(center: center, scale: scale) {
+            NSBezierPath(
+                roundedRect: rect,
+                xRadius: rect.width / 2,
+                yRadius: rect.width / 2
+            ).fill()
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
     }
 }
 
@@ -218,5 +248,18 @@ extension EQStatusNotifier: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+
+    nonisolated public func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor in
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                self.onSelect?()
+            }
+            completionHandler()
+        }
     }
 }

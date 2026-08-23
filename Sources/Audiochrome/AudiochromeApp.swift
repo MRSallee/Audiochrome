@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState = state
         EQStatusNotifier.shared.configure()
         statusBar = StatusBarController(appState: state)
+        EQStatusNotifier.shared.onSelect = { [weak statusBar] in
+            statusBar?.presentMenuIfNeeded()
+        }
 
         // Process taps / AudioDeviceStart are unreliable before the app has activated.
         // Menu-bar click worked because it activated first; mirror that at launch.

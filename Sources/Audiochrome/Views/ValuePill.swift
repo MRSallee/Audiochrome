@@ -8,6 +8,7 @@ struct ValuePill: View {
     private var isEnabled: Bool
     private var isSelected: Bool
     private var action: (() -> Void)?
+    private var expands: Bool
     private var number: Binding<Double>?
     private var numberRange: ClosedRange<Double>?
     private var format: ((Double) -> String)?
@@ -23,12 +24,14 @@ struct ValuePill: View {
         _ value: String,
         isEnabled: Bool = true,
         isSelected: Bool = false,
+        expands: Bool = false,
         action: (() -> Void)? = nil
     ) {
         self.display = value
         self.isEnabled = isEnabled
         self.isSelected = isSelected
         self.action = action
+        self.expands = expands
         self.number = nil
         self.numberRange = nil
         self.format = nil
@@ -44,6 +47,7 @@ struct ValuePill: View {
         self.isEnabled = isEnabled
         self.isSelected = false
         self.action = nil
+        self.expands = false
         self.number = number
         self.numberRange = range
         self.format = format
@@ -51,19 +55,23 @@ struct ValuePill: View {
 
     var body: some View {
         let chip = chipContent
-            .frame(width: Self.standardWidth, height: Self.height)
+            .frame(maxWidth: expands ? .infinity : nil)
+            .frame(width: expands ? nil : Self.standardWidth, height: Self.height)
             .background {
                 Capsule(style: .continuous)
                     .fill(Color.primary.opacity(fillOpacity))
             }
-            .fixedSize()
 
-        if let action {
-            Button(action: action) { chip }
-                .buttonStyle(.plain)
-        } else {
-            chip
+        Group {
+            if let action {
+                Button(action: action) { chip }
+                    .buttonStyle(.plain)
+            } else {
+                chip
+            }
         }
+        .frame(maxWidth: expands ? .infinity : nil)
+        .fixedSize(horizontal: !expands, vertical: true)
     }
 
     @ViewBuilder

@@ -14,8 +14,17 @@ public final class AppState: ObservableObject {
     @Published public private(set) var engineStatus: AudioEngineStatus = .idle
     @Published public private(set) var engineDiagnostics: AudioEngineDiagnostics = .idle
     @Published public private(set) var profileEditor: ProfileEditorDraft?
+    /// Device whose effect editor overlay is open (`nil` when not editing).
+    @Published public internal(set) var effectsEditorIdentityKey: String?
+    @Published public internal(set) var effectsEditorKind: EffectKind?
+    /// Full effects snapshot when the editor opened (restored on Cancel).
+    @Published public internal(set) var effectsEditorBaseline: DeviceEffects?
     /// A/B compare in the EQ editor: dry (level-matched) vs current EQ.
     @Published public private(set) var isEQComparing = false
+    /// A/B compare in the Crossfeed editor: effect off vs current tune.
+    @Published public private(set) var isCrossfeedComparing = false
+    /// A/B compare in the Subharmonic editor: effect off vs current tune.
+    @Published public private(set) var isSubharmonicComparing = false
 
     public let profileStore: ProfileStore
     public let configStore: ConfigStore
@@ -492,6 +501,7 @@ public final class AppState: ObservableObject {
         let folderName = profilesDirectoryURL(forIdentity: mappingKey).lastPathComponent
 
         let profileColorHex = colorHex(forProfile: filename, forIdentity: mappingKey)
+        let effectsLabel = mapping.effects.enabledDisplayNames.joined(separator: " · ")
         switch reason {
         case .launch:
             // Give notification auth a beat so the first banner isn’t dropped.
@@ -499,14 +509,16 @@ public final class AppState: ObservableObject {
                 outputName: outputName,
                 profileDisplayName: profileName,
                 folderName: folderName,
-                colorHex: profileColorHex
+                colorHex: profileColorHex,
+                effectsLabel: effectsLabel
             )
         case .outputChanged:
             EQStatusNotifier.shared.notifyActiveEQ(
                 outputName: outputName,
                 profileDisplayName: profileName,
                 folderName: folderName,
-                colorHex: profileColorHex
+                colorHex: profileColorHex,
+                effectsLabel: effectsLabel
             )
         }
     }
@@ -647,6 +659,8 @@ public final class AppState: ObservableObject {
         configStore.save(config)
         if !enabled {
             isEQComparing = false
+            isCrossfeedComparing = false
+            isSubharmonicComparing = false
         }
         objectWillChange.send()
         syncEngine()
@@ -768,6 +782,33 @@ public final class AppState: ObservableObject {
     public func setEQComparing(_ comparing: Bool) {
         guard isEQComparing != comparing else { return }
         isEQComparing = comparing
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    public func setCrossfeedComparing(_ comparing: Bool) {
+        guard isCrossfeedComparing != comparing else { return }
+        isCrossfeedComparing = comparing
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    public func setSubharmonicComparing(_ comparing: Bool) {
+        guard isSubharmonicComparing != comparing else { return }
+        isSubharmonicComparing = comparing
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
+    }
+
+    /// Clears Crossfeed / Subharmonic A/B. EQ compare is independent.
+    public func clearEffectComparing() {
+        let wasComparing = isCrossfeedComparing || isSubharmonicComparing
+        isCrossfeedComparing = false
+        isSubharmonicComparing = false
+        guard wasComparing else { return }
         lastSyncedProfile = nil
         objectWillChange.send()
         syncEngine()
@@ -977,7 +1018,11 @@ public final class AppState: ObservableObject {
         mapping.profileFilename = nil
         mapping.enabled = false
         mapping.profilesDirectoryPath = nil
+        mapping.effects = .off
         config.setMapping(mapping, forIdentity: key)
+        if effectsEditorIdentityKey == key {
+            effectsEditorIdentityKey = nil
+        }
         if key == AppConfig.allAudioIdentityKey {
             var next = ensureAllAudioKnownOutput(in: config)
             next.setDisplayName(nil, forIdentity: key)
@@ -1194,7 +1239,7 @@ public final class AppState: ObservableObject {
         engineDiagnostics = audioEngine.diagnostics
     }
 
-    private func syncEngine() {
+    func syncEngine() {
         audioEngine.debugOptions = config.debugAudio
         guard let defaultIdentityKey,
               let device = devices.first(where: { $0.identityKey == defaultIdentityKey })
@@ -1262,11 +1307,21 @@ public final class AppState: ObservableObject {
             break
         }
 
+        var effects = mapping.effects
+        if isCrossfeedComparing {
+            effects.crossfeed.enabled = false
+        }
+        if isSubharmonicComparing {
+            effects.subharmonic.enabled = false
+        }
+        var effectsToken = effects.signature
+        if isCrossfeedComparing { effectsToken += ":xfcmp" }
+        if isSubharmonicComparing { effectsToken += ":shcmp" }
         let syncToken: String
         if let liveDraft {
-            syncToken = "editor:\(liveDraft.revision)" + (isEQComparing ? ":cmp" : "")
+            syncToken = "editor:\(liveDraft.revision)" + (isEQComparing ? ":cmp" : "") + "#\(effectsToken)"
         } else {
-            syncToken = filename + (isEQComparing ? ":cmp" : "")
+            syncToken = filename + (isEQComparing ? ":cmp" : "") + "#\(effectsToken)"
         }
 
         // Skip re-apply when nothing meaningful changed (prevents periodic filter resets/pops).
@@ -1323,6 +1378,7 @@ public final class AppState: ObservableObject {
         }
 
         do {
+            audioEngine.applyEffects(effects)
             try audioEngine.apply(
                 profile: profile,
                 to: device,

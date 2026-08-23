@@ -50,6 +50,14 @@ public protocol AudioEngine: AnyObject {
     /// Fade EQ to passthrough while keeping the capture path alive (avoids reconnect pops).
     /// Implementations may fully release later once audio has been silent.
     func bypass()
+    /// Swap the post-EQ insert chain without rebuilding the tap. Default is a no-op.
+    func applyEffects(_ effects: DeviceEffects)
+}
+
+public extension AudioEngine {
+    func applyEffects(_ effects: DeviceEffects) {
+        _ = effects
+    }
 }
 
 /// Placeholder engine that tracks desired state without touching the audio path.

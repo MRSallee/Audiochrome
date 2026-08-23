@@ -12,11 +12,13 @@ struct MenuBarView: View {
     /// 1 = system-default output’s EQ panel visible; 0 = collapsed (an inactive output is focused).
     @State private var activePanelProgress: CGFloat = 1
     @State private var activeOtherProfilesProgress: CGFloat = 0
+    @State private var activeEffectsProgress: CGFloat = 0
 
     /// Which inactive output’s EQ panel is open (`nil` = none).
     @State private var expandedOtherDeviceKey: String?
     @State private var otherDevicePanelProgress: CGFloat = 0
     @State private var inactiveOtherProfilesProgress: CGFloat = 0
+    @State private var inactiveEffectsProgress: CGFloat = 0
 
     /// Inactive outputs visible for this popover session. Cleared profiles stay listed
     /// until the menu closes, so deselecting doesn’t yank the row mid-edit.
@@ -324,16 +326,20 @@ struct MenuBarView: View {
         otherProfilesProgress: Binding<CGFloat>,
         progress: CGFloat
     ) -> some View {
+        let isActive = identityKey == appState.activeMappingIdentityKey
+        let effectsProgress = isActive ? $activeEffectsProgress : $inactiveEffectsProgress
         let height = OutputEQPanelMetrics.height(
             appState: appState,
             identityKey: identityKey,
             otherProfilesProgress: otherProfilesProgress.wrappedValue,
+            effectsProgress: effectsProgress.wrappedValue,
             showsLeadingDivider: false
         )
         return MenuGroupedSection {
             OutputEQPanel(
                 identityKey: identityKey,
                 otherProfilesProgress: otherProfilesProgress,
+                effectsProgress: effectsProgress,
                 colorPickerIdentityKey: $colorPickerIdentityKey,
                 showsLeadingDivider: false,
                 showsCompare: identityKey == appState.activeMappingIdentityKey
@@ -868,7 +874,7 @@ enum MenuChrome {
     static let waveformBottomPadding: CGFloat = 2
     static let otherProfilesSectionVerticalPadding: CGFloat = 6
     /// Wordmark height in the break above Settings (asset is ~5.4∶1).
-    static let logoHeight: CGFloat = 20
+    static let logoHeight: CGFloat = 18
     static let logoBreakBottomPadding: CGFloat = 9
     static let logoBreakTopPadding: CGFloat = 28
     /// Dimmed chrome below the audio-permission CTA.
@@ -1016,6 +1022,7 @@ private enum OutputEQPanelMetrics {
         appState: AppState,
         identityKey: String,
         otherProfilesProgress: CGFloat,
+        effectsProgress: CGFloat,
         showsLeadingDivider: Bool
     ) -> CGFloat {
         let mapping = appState.config.mapping(forIdentity: identityKey)
@@ -1040,6 +1047,7 @@ private enum OutputEQPanelMetrics {
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
         height += disclosureRowSpacing + iconRowHeight // Create New Profile
         height += MenuChrome.otherProfilesSectionVerticalPadding
+        height += EffectsSectionMetrics.height(progress: effectsProgress)
         return height
     }
 }
@@ -1050,6 +1058,7 @@ private struct OutputEQPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     let identityKey: String
     @Binding var otherProfilesProgress: CGFloat
+    @Binding var effectsProgress: CGFloat
     @Binding var colorPickerIdentityKey: String?
     var showsLeadingDivider: Bool = true
     /// A/B Compare only on the default output — inactive device panels can’t drive live EQ.
@@ -1107,10 +1116,17 @@ private struct OutputEQPanel: View {
                 .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
+
+            EffectsSection(identityKey: identityKey, progress: $effectsProgress)
+                .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+                .disabled(appState.needsAudioPermission)
         }
         .onAppear {
             if !hasProfile {
                 otherProfilesProgress = 1
+            }
+            if mapping.effects.isAudible {
+                effectsProgress = 1
             }
         }
         .onChange(of: mapping.profileFilename) { _, filename in
@@ -1119,6 +1135,12 @@ private struct OutputEQPanel: View {
                 popoverChrome.animatingDisclosure {
                     otherProfilesProgress = 1
                 }
+            }
+        }
+        .onChange(of: mapping.effects) { _, effects in
+            guard effects.isAudible, effectsProgress < 0.5 else { return }
+            popoverChrome.animatingDisclosure {
+                effectsProgress = 1
             }
         }
         .background {
@@ -1334,6 +1356,7 @@ private struct OutputEQPanel: View {
 /// A/B compare chip — matches `ValuePill` size/type. Click toggles; hold previews dry until release.
 struct CompareChip: View {
     var isOn: Bool
+    var subject: String = "EQ"
     var setComparing: (Bool) -> Void
 
     @State private var pressStartedAt: Date?
@@ -1379,8 +1402,8 @@ struct CompareChip: View {
                         }
                     }
             )
-            .accessibilityLabel("Compare EQ")
-            .accessibilityHint("Toggle level-matched bypass. Press and hold to preview, then release.")
+            .accessibilityLabel("Compare \(subject)")
+            .accessibilityHint("Toggle bypass. Press and hold to preview, then release.")
             .accessibilityAddTraits(isOn ? [.isSelected, .isButton] : [.isButton])
     }
 }

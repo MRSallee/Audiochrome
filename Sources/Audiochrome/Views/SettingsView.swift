@@ -9,8 +9,8 @@ struct SettingsView: View {
 
     @State private var configSnapshot: AppConfig?
     @State private var didCommit = false
-    /// 1 = Manage Configuration open. Always starts expanded when Settings appears.
-    @State private var manageConfigurationProgress: CGFloat = 1
+    /// 1 = Manage Configuration open. Starts collapsed.
+    @State private var manageConfigurationProgress: CGFloat = 0
 
     private enum SampleRateChoice: String, CaseIterable, Identifiable {
         case auto
@@ -106,6 +106,10 @@ struct SettingsView: View {
             manageConfigurationSection
                 .padding(.top, MenuChrome.sectionTopPadding)
 
+            Divider()
+                .padding(.horizontal, MenuChrome.dividerInset)
+                .padding(.top, 6)
+
             AudiochromeBrandLockup(logoHeight: MenuChrome.logoHeight, version: Self.versionLabel)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, MenuChrome.contentInset)
@@ -117,7 +121,6 @@ struct SettingsView: View {
             appState.syncOpenAtLoginFromSystem()
             configSnapshot = appState.config
             didCommit = false
-            manageConfigurationProgress = 1
         }
         .onDisappear {
             if !didCommit {

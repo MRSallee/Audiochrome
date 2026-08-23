@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.5.4** — Menu-bar icon is a five-bar FFT visualizer on the profile color; the 12-band star is kept as a switchable style.  
+> **v1.6.0** — Per-device Crossfeed and Subharmonics, with EQ-style editors, plots, and Compare.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

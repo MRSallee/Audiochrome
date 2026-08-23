@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Wordmark — shared by the menu brand band and Settings footer.
+/// Wordmark — Settings footer lockup.
 struct AudiochromeBrandLockup: View {
-    var logoHeight: CGFloat = 20
+    var logoHeight: CGFloat = 18
     var version: String? = nil
 
     var body: some View {

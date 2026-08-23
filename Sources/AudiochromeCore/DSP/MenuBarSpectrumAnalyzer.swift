@@ -33,15 +33,17 @@ public enum MenuBarBarsMark {
     public static let gap: CGFloat = 0.5
     public static let heights: [CGFloat] = [6, 10, 12, 10, 6]
 
-    public static func barFrames(center: CGPoint) -> [CGRect] {
-        let totalWidth = CGFloat(count) * barWidth + CGFloat(count - 1) * gap
+    public static func barFrames(center: CGPoint, scale: CGFloat = 1) -> [CGRect] {
+        let width = barWidth * scale
+        let spacing = gap * scale
+        let totalWidth = CGFloat(count) * width + CGFloat(count - 1) * spacing
         let firstX = center.x - totalWidth / 2
         return (0..<count).map { i in
-            let height = heights[i]
+            let height = heights[i] * scale
             return CGRect(
-                x: firstX + CGFloat(i) * (barWidth + gap),
+                x: firstX + CGFloat(i) * (width + spacing),
                 y: center.y - height / 2,
-                width: barWidth,
+                width: width,
                 height: height
             )
         }

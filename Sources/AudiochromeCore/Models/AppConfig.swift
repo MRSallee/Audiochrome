@@ -6,17 +6,44 @@ public struct OutputMapping: Codable, Equatable, Sendable {
     public var colorHex: String
     /// Absolute path to this output’s EQ profile folder. `nil` = `~/Documents/Audiochrome/EQ profiles`.
     public var profilesDirectoryPath: String?
+    /// Device-scoped toys (crossfeed, later convolution). Missing key → off.
+    public var effects: DeviceEffects
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, profileFilename, colorHex, profilesDirectoryPath, effects
+    }
 
     public init(
         enabled: Bool = false,
         profileFilename: String? = nil,
         colorHex: String = ProfileColorPalette.swatches[0],
-        profilesDirectoryPath: String? = nil
+        profilesDirectoryPath: String? = nil,
+        effects: DeviceEffects = .off
     ) {
         self.enabled = enabled
         self.profileFilename = profileFilename
         self.colorHex = colorHex
         self.profilesDirectoryPath = profilesDirectoryPath
+        self.effects = effects
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        profileFilename = try container.decodeIfPresent(String.self, forKey: .profileFilename)
+        colorHex = try container.decodeIfPresent(String.self, forKey: .colorHex)
+            ?? ProfileColorPalette.swatches[0]
+        profilesDirectoryPath = try container.decodeIfPresent(String.self, forKey: .profilesDirectoryPath)
+        effects = try container.decodeIfPresent(DeviceEffects.self, forKey: .effects) ?? .off
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encodeIfPresent(profileFilename, forKey: .profileFilename)
+        try container.encode(colorHex, forKey: .colorHex)
+        try container.encodeIfPresent(profilesDirectoryPath, forKey: .profilesDirectoryPath)
+        try container.encode(effects, forKey: .effects)
     }
 
     /// Color for `filename` by A→Z order among `filenames`, looping the palette.

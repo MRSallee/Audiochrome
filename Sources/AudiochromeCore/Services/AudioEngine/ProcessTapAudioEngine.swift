@@ -10,6 +10,8 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     public var debugOptions = AudioEngineDebugOptions()
 
     private let processor = EQProcessor()
+    private let effectsProcessor = EffectsProcessor()
+    private var currentEffects = DeviceEffects.off
     private let spectrum = MenuBarSpectrumAnalyzer()
     private var spectrumMix = [Float](repeating: 0, count: 2048)
     private let stateLock = NSLock()
@@ -82,6 +84,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
            currentDeviceUID == device.uid,
            appliedDebugOptions == debugOptions {
             processor.update(profile: profile, sampleRate: sampleRate)
+            effectsProcessor.update(effects: currentEffects, sampleRate: sampleRate)
             currentProfileName = profile.name
             status = .engaged(deviceName: device.name, profileName: profile.name)
             return
@@ -135,6 +138,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             return
         }
         processor.clear()
+        effectsProcessor.clear()
         currentProfileName = nil
         status = .idle
         silenceLock.lock()
@@ -152,6 +156,13 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         silenceTeardownWorkItem?.cancel()
         silenceTeardownWorkItem = nil
         silenceLock.unlock()
+    }
+
+    public func applyEffects(_ effects: DeviceEffects) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        currentEffects = EffectsFeature.isEnabled ? effects : .off
+        effectsProcessor.update(effects: currentEffects, sampleRate: sampleRate)
     }
 
     // MARK: - Start / stop
@@ -222,6 +233,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         let nominal = deviceRate ?? tapRate ?? sampleRate
         sampleRate = designSampleRate(nominal: nominal)
         processor.update(profile: profile, sampleRate: sampleRate)
+        effectsProcessor.update(effects: currentEffects, sampleRate: sampleRate)
         appliedDebugOptions = debugOptions
 
         let aggregateUID = "app.audiochrome.aggregate.\(tapUUID)"
@@ -290,6 +302,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             if abs(designRate - sampleRate) > 0.5 {
                 sampleRate = designRate
                 processor.update(profile: profile, sampleRate: sampleRate)
+                effectsProcessor.update(effects: currentEffects, sampleRate: sampleRate)
             }
         } else {
             lastAggregateSampleRate = nil
@@ -370,6 +383,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
         }
 
         processor.clear()
+        effectsProcessor.clear()
         currentDeviceUID = nil
         currentProfileName = nil
         appliedDebugOptions = nil
@@ -425,12 +439,28 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
                 if index == 0 { renderedFrames = frames }
             }
             engine.processor.endRender(frames: renderedFrames)
+            if outBuffers.count >= 2,
+               let left = outBuffers[0].mData?.assumingMemoryBound(to: Float.self),
+               let right = outBuffers[1].mData?.assumingMemoryBound(to: Float.self) {
+                let leftFrames = Int(outBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size))
+                let rightFrames = Int(outBuffers[1].mDataByteSize / UInt32(MemoryLayout<Float>.size))
+                engine.effectsProcessor.processPlanar(
+                    left: left,
+                    right: right,
+                    frames: min(leftFrames, rightFrames)
+                )
+            }
         } else {
             for outBuffer in outBuffers {
                 guard let outPtr = outBuffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
                 let channels = max(outBuffer.mNumberChannels, 1)
                 let frames = outBuffer.mDataByteSize / UInt32(MemoryLayout<Float>.size) / channels
                 engine.processor.processInterleaved(outPtr, frames: frames, channels: channels)
+                engine.effectsProcessor.processInterleaved(
+                    outPtr,
+                    frames: Int(frames),
+                    channels: Int(channels)
+                )
             }
         }
 
