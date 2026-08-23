@@ -336,6 +336,7 @@ struct MenuBarView: View {
             effectsProgress: effectsProgress.wrappedValue,
             showsLeadingDivider: false
         )
+        let mapping = appState.config.mapping(forIdentity: identityKey)
         return MenuGroupedSection {
             OutputEQPanel(
                 identityKey: identityKey,
@@ -348,7 +349,7 @@ struct MenuBarView: View {
         }
         .frame(height: max(0, progress) * height, alignment: .top)
         .clipped()
-        .opacity(progress)
+        .opacity(progress * (mapping.enabled ? 1 : MenuChrome.permissionLockedOpacity))
         .allowsHitTesting(progress > 0.98)
     }
 
@@ -1044,11 +1045,14 @@ private enum OutputEQPanelMetrics {
             height += activeProfileBlockHeight(hasProfile: hasProfile)
         }
 
-        height += disclosureRowSpacing + iconRowHeight // Create New EQ
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // EQs header
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
-        height += MenuChrome.otherProfilesSectionVerticalPadding
+        height += iconRowHeight // Create New EQ
+        if EffectsFeature.isEnabled, DeviceEffects.listedKinds.count > 0 {
+            height += MenuChrome.otherProfilesSectionVerticalPadding
+            height += 1 // divider before Effects
+        }
         height += EffectsSectionMetrics.height(progress: effectsProgress)
         return height
     }
@@ -1114,19 +1118,24 @@ private struct OutputEQPanel: View {
 
             activeProfileSection
 
-            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
-                .padding(.top, OutputEQPanelMetrics.disclosureRowSpacing)
-                .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
-                .disabled(appState.needsAudioPermission)
-
             otherProfilesSection
-                .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
+                .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
 
-            EffectsSection(identityKey: identityKey, progress: $effectsProgress)
+            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
+
+            if EffectsFeature.isEnabled, !DeviceEffects.listedKinds.isEmpty {
+                Divider()
+                    .padding(.horizontal, MenuChrome.dividerInset)
+                    .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
+
+                EffectsSection(identityKey: identityKey, progress: $effectsProgress)
+                    .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+                    .disabled(appState.needsAudioPermission)
+            }
         }
         .onAppear {
             if !hasProfile {
@@ -1268,7 +1277,7 @@ private struct OutputEQPanel: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
-                title: "EQs",
+                title: "Available EQs",
                 style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {

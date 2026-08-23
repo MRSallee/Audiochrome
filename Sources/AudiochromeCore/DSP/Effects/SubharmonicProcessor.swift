@@ -6,6 +6,8 @@ import Foundation
 final class SubharmonicProcessor: @unchecked Sendable {
     private static let twoPi = Double.pi * 2
     private static let lookaheadSeconds = 0.040
+    /// Equal-power blend between delay taps when Timing Lock flips.
+    private static let spliceSeconds = 0.012
     private static let maxDelay = 16_384
     private static let dcBlockHz = 10.0
 
@@ -39,6 +41,17 @@ final class SubharmonicProcessor: @unchecked Sendable {
     private var samplesSinceCrossing = 1_000_000.0
     private var lastPeriod = 0.0
     private var phase = 0.0
+    private var activeDelaySamples = 0
+    private var spliceFrom = 0
+    private var spliceTo = 0
+    private var splicePos = 0
+    private var spliceLen = 0
+    private var queuedDelay: Int?
+    private var warmupTarget = 0
+    private var warmupFilled = 0
+    /// Keep the delay running after disable until it has spliced back to zero.
+    private var running = false
+    private var lastRate = 48_000.0
 
     private var delayL: [Double]
     private var delayR: [Double]
@@ -85,7 +98,7 @@ final class SubharmonicProcessor: @unchecked Sendable {
         frames: Int
     ) {
         adoptPendingIfNeeded()
-        guard params.enabled, frames > 0 else { return }
+        guard running, frames > 0 else { return }
         for i in 0..<frames {
             let pair = processPair(left: Double(left[i]), right: Double(right[i]))
             left[i] = Float(pair.left)
@@ -95,7 +108,7 @@ final class SubharmonicProcessor: @unchecked Sendable {
 
     func processInterleaved(_ buffer: UnsafeMutablePointer<Float>, frames: Int, channels: Int) {
         adoptPendingIfNeeded()
-        guard params.enabled, frames > 0, channels >= 2 else { return }
+        guard running, frames > 0, channels >= 2 else { return }
         for i in 0..<frames {
             let base = i * channels
             let pair = processPair(left: Double(buffer[base]), right: Double(buffer[base + 1]))
@@ -126,10 +139,15 @@ final class SubharmonicProcessor: @unchecked Sendable {
 
         delayL[writeIndex] = left
         delayR[writeIndex] = right
-        let delay = params.delaySamples
-        let readIndex = (writeIndex - delay + Self.maxDelay) % Self.maxDelay
-        let dryL = delayL[readIndex]
-        let dryR = delayR[readIndex]
+        if warmupTarget > 0 {
+            warmupFilled += 1
+            if warmupFilled >= warmupTarget {
+                let target = warmupTarget
+                warmupTarget = 0
+                beginSplice(to: target)
+            }
+        }
+        let dry = readDry()
         writeIndex = (writeIndex + 1) % Self.maxDelay
 
         var raw = 0.0
@@ -142,7 +160,67 @@ final class SubharmonicProcessor: @unchecked Sendable {
         }
         subLP += params.subCoeff * (raw - subLP)
         let wet = subLP * params.mix
-        return (dryL + wet, dryR + wet)
+        return (dry.left + wet, dry.right + wet)
+    }
+
+    /// Equal-power mix of the old and new delay taps so Timing Lock
+    /// doesn’t mute or step the dry.
+    private func readDry() -> (left: Double, right: Double) {
+        if spliceLen > 0 {
+            let t = min(1, Double(splicePos) / Double(spliceLen))
+            let wTo = sin(t * Double.pi * 0.5)
+            let wFrom = cos(t * Double.pi * 0.5)
+            let left = tap(delayL, samples: spliceFrom) * wFrom + tap(delayL, samples: spliceTo) * wTo
+            let right = tap(delayR, samples: spliceFrom) * wFrom + tap(delayR, samples: spliceTo) * wTo
+            splicePos += 1
+            if splicePos >= spliceLen {
+                finishSplice()
+            }
+            return (left, right)
+        }
+        return (tap(delayL, samples: activeDelaySamples), tap(delayR, samples: activeDelaySamples))
+    }
+
+    private func tap(_ line: [Double], samples: Int) -> Double {
+        let readIndex = (writeIndex - samples + Self.maxDelay) % Self.maxDelay
+        return line[readIndex]
+    }
+
+    private func beginSplice(to target: Int) {
+        guard target != activeDelaySamples else { return }
+        spliceFrom = activeDelaySamples
+        spliceTo = target
+        splicePos = 0
+        spliceLen = max(1, Int((Self.spliceSeconds * lastRate).rounded()))
+    }
+
+    private func requestDelay(_ target: Int) {
+        if spliceLen > 0 {
+            queuedDelay = target
+            return
+        }
+        if target == activeDelaySamples {
+            if !params.enabled {
+                running = false
+                resetMemory()
+            }
+            return
+        }
+        beginSplice(to: target)
+    }
+
+    private func finishSplice() {
+        activeDelaySamples = spliceTo
+        spliceLen = 0
+        if let queued = queuedDelay {
+            queuedDelay = nil
+            beginSplice(to: queued)
+            return
+        }
+        if !params.enabled, activeDelaySamples == 0 {
+            running = false
+            resetMemory()
+        }
     }
 
     private func extract(mid: Double) -> Double {
@@ -162,11 +240,33 @@ final class SubharmonicProcessor: @unchecked Sendable {
         lock.unlock()
 
         guard let next, next != params else { return }
-        let rateChanged = abs(next.sampleRate - params.sampleRate) > 0.5
-        let delayChanged = next.delaySamples != params.delaySamples
-        params = next
-        if !next.enabled || rateChanged || delayChanged {
-            resetMemory()
+        let wasEnabled = params.enabled
+        if next.sampleRate > 1 {
+            lastRate = next.sampleRate
+        }
+        let rateChanged = next.sampleRate > 1 && abs(next.sampleRate - params.sampleRate) > 0.5 && wasEnabled
+
+        if next.enabled {
+            params = next
+            if !wasEnabled || rateChanged {
+                resetMemory()
+                running = true
+                if next.delaySamples > 0 {
+                    warmupTarget = next.delaySamples
+                    warmupFilled = 0
+                }
+            } else if next.delaySamples == 0 {
+                warmupTarget = 0
+                requestDelay(0)
+            } else if warmupTarget > 0 {
+                warmupTarget = next.delaySamples
+            } else {
+                requestDelay(next.delaySamples)
+            }
+        } else {
+            params = next
+            warmupTarget = 0
+            requestDelay(0)
         }
     }
 
@@ -181,6 +281,14 @@ final class SubharmonicProcessor: @unchecked Sendable {
         samplesSinceCrossing = 1_000_000
         lastPeriod = 0
         phase = 0
+        activeDelaySamples = 0
+        spliceFrom = 0
+        spliceTo = 0
+        splicePos = 0
+        spliceLen = 0
+        queuedDelay = nil
+        warmupTarget = 0
+        warmupFilled = 0
         writeIndex = 0
         for i in delayL.indices { delayL[i] = 0 }
         for i in delayR.indices { delayR[i] = 0 }

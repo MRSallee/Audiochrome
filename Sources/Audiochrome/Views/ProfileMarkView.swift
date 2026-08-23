@@ -2,7 +2,7 @@ import AppKit
 import AudiochromeCore
 import SwiftUI
 
-/// Same rest-state 5-bar mark as the menu-bar icon.
+/// Same 5-bar family as the menu-bar icon, inscribed for the 26pt list plate.
 /// Selected: profile color plate + black/white bars.
 /// Unselected: menu-style gray plate + near-black bars.
 struct ProfileMarkView: View {
@@ -17,16 +17,15 @@ struct ProfileMarkView: View {
         Canvas { context, canvasSize in
             let plate = CGRect(origin: .zero, size: canvasSize).insetBy(dx: 0.5, dy: 0.5)
             let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-            let scale = canvasSize.width / 18
             if selected, let colorHex {
                 context.fill(Path(ellipseIn: plate), with: .color(colorHex.asHexColor))
                 if showsBars {
-                    fillBars(&context, center: center, scale: scale, color: Color(nsColor: ProfileColorPalette.barInk(for: colorHex)))
+                    fillBars(&context, center: center, size: canvasSize.width, color: Color(nsColor: ProfileColorPalette.barInk(for: colorHex)))
                 }
             } else {
                 context.fill(Path(ellipseIn: plate), with: .color(Color(nsColor: .labelColor).opacity(0.16)))
                 if showsBars {
-                    fillBars(&context, center: center, scale: scale, color: Color(nsColor: .labelColor))
+                    fillBars(&context, center: center, size: canvasSize.width, color: Color(nsColor: .labelColor))
                 }
             }
         }
@@ -34,8 +33,8 @@ struct ProfileMarkView: View {
         .accessibilityHidden(true)
     }
 
-    private func fillBars(_ context: inout GraphicsContext, center: CGPoint, scale: CGFloat, color: Color) {
-        for rect in MenuBarBarsMark.barFrames(center: center, scale: scale) {
+    private func fillBars(_ context: inout GraphicsContext, center: CGPoint, size: CGFloat, color: Color) {
+        for rect in MenuBarBarsMark.listBarFrames(center: center, size: size) {
             context.fill(
                 RoundedRectangle(cornerRadius: rect.width / 2, style: .continuous)
                     .path(in: rect),

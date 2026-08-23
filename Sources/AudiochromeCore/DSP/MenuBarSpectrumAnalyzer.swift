@@ -33,17 +33,45 @@ public enum MenuBarBarsMark {
     public static let gap: CGFloat = 0.5
     public static let heights: [CGFloat] = [6, 10, 12, 10, 6]
 
+    /// 26pt list / in-app plate. Wider gaps so the five pills read at that size.
+    public enum List {
+        public static let designSize: CGFloat = 26
+        public static let barWidth: CGFloat = 2
+        public static let gap: CGFloat = 1.5
+        public static let heights: [CGFloat] = [10, 16, 18, 16, 10]
+    }
+
     public static func barFrames(center: CGPoint, scale: CGFloat = 1) -> [CGRect] {
-        let width = barWidth * scale
+        frames(center: center, scale: scale, width: barWidth, gap: gap, heights: heights)
+    }
+
+    public static func listBarFrames(center: CGPoint, size: CGFloat) -> [CGRect] {
+        frames(
+            center: center,
+            scale: size / List.designSize,
+            width: List.barWidth,
+            gap: List.gap,
+            heights: List.heights
+        )
+    }
+
+    private static func frames(
+        center: CGPoint,
+        scale: CGFloat,
+        width: CGFloat,
+        gap: CGFloat,
+        heights: [CGFloat]
+    ) -> [CGRect] {
+        let bar = width * scale
         let spacing = gap * scale
-        let totalWidth = CGFloat(count) * width + CGFloat(count - 1) * spacing
+        let totalWidth = CGFloat(count) * bar + CGFloat(count - 1) * spacing
         let firstX = center.x - totalWidth / 2
         return (0..<count).map { i in
             let height = heights[i] * scale
             return CGRect(
-                x: firstX + CGFloat(i) * (width + spacing),
+                x: firstX + CGFloat(i) * (bar + spacing),
                 y: center.y - height / 2,
-                width: width,
+                width: bar,
                 height: height
             )
         }

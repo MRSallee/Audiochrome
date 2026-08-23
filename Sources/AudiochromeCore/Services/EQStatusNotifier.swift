@@ -225,9 +225,8 @@ public final class EQStatusNotifier: NSObject {
         NSBezierPath(ovalIn: bounds).fill()
 
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let scale = CGFloat(pixels) / 18
         ProfileColorPalette.barInk(for: hex).setFill()
-        for rect in MenuBarBarsMark.barFrames(center: center, scale: scale) {
+        for rect in MenuBarBarsMark.listBarFrames(center: center, size: CGFloat(pixels)) {
             NSBezierPath(
                 roundedRect: rect,
                 xRadius: rect.width / 2,

@@ -19,8 +19,8 @@ enum EffectsSectionMetrics {
     @MainActor
     static func height(progress: CGFloat) -> CGFloat {
         guard EffectsFeature.isEnabled, listedCount > 0 else { return 0 }
-        // Adjacent to EQs — that section already supplies the shared 6pt gap.
-        return MenuChrome.sectionRowHeight
+        return MenuChrome.otherProfilesSectionVerticalPadding
+            + MenuChrome.sectionRowHeight
             + max(0, progress) * expandedBodyHeight()
             + MenuChrome.otherProfilesSectionVerticalPadding
     }
@@ -72,7 +72,7 @@ struct EffectsSection: View {
                 .opacity(progress)
                 .allowsHitTesting(progress > 0.98)
             }
-            .padding(.bottom, MenuChrome.otherProfilesSectionVerticalPadding)
+            .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
         }
     }
 
@@ -104,34 +104,47 @@ private struct EffectRow: View {
                 .fill(isHovering ? Color.primary.opacity(0.10) : Color.clear)
                 .padding(.horizontal, MenuChrome.highlightInset)
 
-            HStack(spacing: 10) {
-                EffectMarkView(kind: kind, isOn: isOn)
-
-                Text(kind.title)
-                    .font(MenuChrome.bodyFont)
-                    .fontWeight(.regular)
-                    .foregroundStyle(isOn ? .primary : .secondary)
-                    .lineLimit(1)
+            HStack(spacing: 0) {
+                Button(action: onToggle) {
+                    HStack(spacing: 10) {
+                        EffectMarkView(kind: kind, isOn: isOn)
+                        Text(kind.title)
+                            .font(MenuChrome.bodyFont)
+                            .fontWeight(.regular)
+                            .foregroundStyle(isOn ? .primary : .secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                    }
+                    .padding(.leading, MenuChrome.contentInset)
+                    .padding(.trailing, isOn ? 10 : MenuChrome.contentInset)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
-                    .onTapGesture(perform: onToggle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(kind.title)
+                .accessibilityValue(isOn ? "On" : "Off")
 
                 if isOn {
-                    Text(presetTitle)
-                        .font(MenuChrome.bodyFont)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-
-                    EditSettingsButton(action: onEdit)
+                    Button(action: onEdit) {
+                        HStack(spacing: 10) {
+                            Text(presetTitle)
+                                .font(MenuChrome.bodyFont)
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                            EditIcon()
+                                .frame(width: 22, height: 22)
+                        }
+                        .padding(.trailing, MenuChrome.contentInset)
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Edit \(presetTitle)")
                 }
             }
-            .padding(.horizontal, MenuChrome.contentInset)
         }
         .frame(height: MenuChrome.iconRowHeight)
         .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(isOn ? presetTitle : "Off")
         .onHover { isHovering = $0 }
         .focusEffectDisabled()
     }
