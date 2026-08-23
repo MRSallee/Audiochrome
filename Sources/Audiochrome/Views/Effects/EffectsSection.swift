@@ -19,8 +19,8 @@ enum EffectsSectionMetrics {
     @MainActor
     static func height(progress: CGFloat) -> CGFloat {
         guard EffectsFeature.isEnabled, listedCount > 0 else { return 0 }
-        return MenuChrome.otherProfilesSectionVerticalPadding
-            + MenuChrome.sectionRowHeight
+        // Adjacent to EQs — that section already supplies the shared 6pt gap.
+        return MenuChrome.sectionRowHeight
             + max(0, progress) * expandedBodyHeight()
             + MenuChrome.otherProfilesSectionVerticalPadding
     }
@@ -54,8 +54,8 @@ struct EffectsSection: View {
                     ForEach(DeviceEffects.listedKinds) { kind in
                         EffectRow(
                             kind: kind,
-                            colorHex: markColorHex,
-                            isOn: effects.isEnabled(kind)
+                            isOn: effects.isEnabled(kind),
+                            presetTitle: presetTitle(for: kind)
                         ) {
                             appState.setEffectEnabled(
                                 !effects.isEnabled(kind),
@@ -72,28 +72,27 @@ struct EffectsSection: View {
                 .opacity(progress)
                 .allowsHitTesting(progress > 0.98)
             }
-            .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
+            .padding(.bottom, MenuChrome.otherProfilesSectionVerticalPadding)
         }
-    }
-
-    private var markColorHex: String {
-        let mapping = appState.config.mapping(forIdentity: identityKey)
-        if let filename = mapping.profileFilename {
-            return appState.colorHex(forProfile: filename, forIdentity: identityKey)
-        }
-        return mapping.colorHex
     }
 
     private func openEditor(_ kind: EffectKind) {
         appState.beginEditEffect(kind, forIdentity: identityKey)
         popoverChrome.present(.effectsEditor)
     }
+
+    private func presetTitle(for kind: EffectKind) -> String {
+        switch kind {
+        case .crossfeed: return effects.crossfeed.selectedPreset.title
+        case .subharmonic: return effects.subharmonic.selectedPreset.title
+        }
+    }
 }
 
 private struct EffectRow: View {
     let kind: EffectKind
-    let colorHex: String
     let isOn: Bool
+    let presetTitle: String
     let onToggle: () -> Void
     let onEdit: () -> Void
 
@@ -106,11 +105,7 @@ private struct EffectRow: View {
                 .padding(.horizontal, MenuChrome.highlightInset)
 
             HStack(spacing: 10) {
-                EffectMarkView(
-                    kind: kind,
-                    colorHex: colorHex,
-                    isOn: isOn
-                )
+                EffectMarkView(kind: kind, isOn: isOn)
 
                 Text(kind.title)
                     .font(MenuChrome.bodyFont)
@@ -121,19 +116,22 @@ private struct EffectRow: View {
                     .contentShape(Rectangle())
                     .onTapGesture(perform: onToggle)
 
-                Button(action: onEdit) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
+                if isOn {
+                    Text(presetTitle)
+                        .font(MenuChrome.bodyFont)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+
+                    EditSettingsButton(action: onEdit)
                 }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, MenuChrome.contentInset)
         }
         .frame(height: MenuChrome.iconRowHeight)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityValue(isOn ? presetTitle : "Off")
         .onHover { isHovering = $0 }
         .focusEffectDisabled()
     }
@@ -143,7 +141,6 @@ private struct EffectRow: View {
 struct EffectPresetRow: View {
     let kind: EffectKind
     let title: String
-    let colorHex: String
     let isSelected: Bool
     let action: () -> Void
 
@@ -157,7 +154,7 @@ struct EffectPresetRow: View {
                     .padding(.horizontal, MenuChrome.highlightInset)
 
                 HStack(spacing: 10) {
-                    EffectMarkView(kind: kind, colorHex: colorHex, isOn: isSelected)
+                    EffectMarkView(kind: kind, isOn: isSelected)
                     Text(title)
                         .font(MenuChrome.bodyFont)
                         .fontWeight(.regular)
@@ -176,10 +173,9 @@ struct EffectPresetRow: View {
     }
 }
 
-/// Same plate + ink as `ProfileMarkView`: gray when off, profile color when on.
+/// Gray plate when off; white plate + dark ink when on.
 struct EffectMarkView: View {
     let kind: EffectKind
-    let colorHex: String
     let isOn: Bool
     var size: CGFloat = MenuChrome.listIconSize
 
@@ -210,16 +206,13 @@ struct EffectMarkView: View {
 
     private var plate: Color {
         if isOn {
-            return colorHex.asHexColor
+            return Color.white
         }
         return Color(nsColor: .labelColor).opacity(0.16)
     }
 
     private var ink: Color {
-        if isOn {
-            return Color(nsColor: ProfileColorPalette.barInk(for: colorHex))
-        }
-        return Color(nsColor: .labelColor)
+        Color(nsColor: .labelColor)
     }
 }
 

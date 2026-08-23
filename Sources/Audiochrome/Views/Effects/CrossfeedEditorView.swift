@@ -83,7 +83,6 @@ struct CrossfeedEditorView: View {
                         EffectPresetRow(
                             kind: .crossfeed,
                             title: preset.title,
-                            colorHex: markColorHex,
                             isSelected: settings.preset == preset
                         ) {
                             update { $0.apply(preset) }
@@ -137,7 +136,7 @@ struct CrossfeedEditorView: View {
 
     private var liveToken: String {
         guard identityKey != nil else { return "" }
-        return "\(liveSettings.signature)|\(liveColorHex)|\(appState.isCrossfeedComparing)"
+        return "\(liveSettings.signature)|\(liveSettings.preset.rawValue)|\(liveColorHex)|\(appState.isCrossfeedComparing)"
     }
 
     private func rememberIfEditing() {
@@ -160,7 +159,7 @@ struct CrossfeedEditorView: View {
         }
         .padding(.horizontal, MenuChrome.contentInset)
         .padding(.top, MenuChrome.menuPadding)
-        .padding(.bottom, MenuChrome.headerVerticalPadding + 6)
+        .padding(.bottom, MenuChrome.headerVerticalPadding)
     }
 
     private func detentRow<T: Equatable>(

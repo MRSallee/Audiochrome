@@ -106,38 +106,41 @@ struct ProfileEditorView: View {
 
     private func header(_ draft: ProfileEditorDraft) -> some View {
         HStack(spacing: 10) {
-            Button {
-                showColorPicker = true
-            } label: {
-                ProfileMarkView(
-                    colorHex: draft.colorHex,
-                    isSelected: true
-                )
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
-                HStack(spacing: 10) {
-                    ForEach(ProfileColorPalette.swatches, id: \.self) { hex in
-                        Circle()
-                            .fill(hex.asHexColor)
-                            .frame(width: 18, height: 18)
-                            .overlay {
-                                if ProfileColorPalette.canonical(draft.colorHex) == hex {
-                                    Circle().strokeBorder(.primary, lineWidth: 1.5)
-                                }
-                            }
-                            .onTapGesture {
-                                appState.updateProfileEditor { $0.colorHex = hex }
-                                showColorPicker = false
-                            }
-                    }
+            HStack(spacing: 6) {
+                Button {
+                    showColorPicker = true
+                } label: {
+                    ProfileMarkView(
+                        colorHex: draft.colorHex,
+                        isSelected: true,
+                        showsBars: false
+                    )
                 }
-                .padding(10)
-            }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showColorPicker, arrowEdge: .bottom) {
+                    HStack(spacing: 10) {
+                        ForEach(ProfileColorPalette.swatches, id: \.self) { hex in
+                            Circle()
+                                .fill(hex.asHexColor)
+                                .frame(width: 18, height: 18)
+                                .overlay {
+                                    if ProfileColorPalette.canonical(draft.colorHex) == hex {
+                                        Circle().strokeBorder(.primary, lineWidth: 1.5)
+                                    }
+                                }
+                                .onTapGesture {
+                                    appState.updateProfileEditor { $0.colorHex = hex }
+                                    showColorPicker = false
+                                }
+                        }
+                    }
+                    .padding(10)
+                }
 
-            editorName(draft)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(minHeight: MenuChrome.textRowContentHeight)
+                editorName(draft)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: MenuChrome.textRowContentHeight)
+            }
 
             HeaderCommitControls(onCancel: cancel, onSave: save)
                 .layoutPriority(1)
@@ -632,7 +635,7 @@ private struct AutoChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text("AUTO")
+            Text("Auto")
                 .font(CollapsedColumns.font)
                 .foregroundStyle(isOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
                 .minimumScaleFactor(0.5)

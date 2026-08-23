@@ -11,6 +11,12 @@ extension AppState {
         forIdentity identityKey: String
     ) {
         updateEffects(forIdentity: identityKey) { $0.setEnabled(enabled, for: kind) }
+        if enabled {
+            let key = mappingIdentityKey(for: identityKey)
+            if !config.mapping(forIdentity: key).enabled {
+                setEnabled(forIdentity: key, enabled: true)
+            }
+        }
     }
 
     public func updateCrossfeed(

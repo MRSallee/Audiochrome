@@ -17,15 +17,16 @@ struct ProfileMarkView: View {
         Canvas { context, canvasSize in
             let plate = CGRect(origin: .zero, size: canvasSize).insetBy(dx: 0.5, dy: 0.5)
             let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+            let scale = canvasSize.width / 18
             if selected, let colorHex {
                 context.fill(Path(ellipseIn: plate), with: .color(colorHex.asHexColor))
                 if showsBars {
-                    fillBars(&context, center: center, color: Color(nsColor: ProfileColorPalette.barInk(for: colorHex)))
+                    fillBars(&context, center: center, scale: scale, color: Color(nsColor: ProfileColorPalette.barInk(for: colorHex)))
                 }
             } else {
                 context.fill(Path(ellipseIn: plate), with: .color(Color(nsColor: .labelColor).opacity(0.16)))
                 if showsBars {
-                    fillBars(&context, center: center, color: Color(nsColor: .labelColor))
+                    fillBars(&context, center: center, scale: scale, color: Color(nsColor: .labelColor))
                 }
             }
         }
@@ -33,10 +34,10 @@ struct ProfileMarkView: View {
         .accessibilityHidden(true)
     }
 
-    private func fillBars(_ context: inout GraphicsContext, center: CGPoint, color: Color) {
-        for rect in MenuBarBarsMark.barFrames(center: center) {
+    private func fillBars(_ context: inout GraphicsContext, center: CGPoint, scale: CGFloat, color: Color) {
+        for rect in MenuBarBarsMark.barFrames(center: center, scale: scale) {
             context.fill(
-                RoundedRectangle(cornerRadius: MenuBarBarsMark.barWidth / 2, style: .continuous)
+                RoundedRectangle(cornerRadius: rect.width / 2, style: .continuous)
                     .path(in: rect),
                 with: .color(color)
             )

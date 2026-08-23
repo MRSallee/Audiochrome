@@ -131,25 +131,25 @@ public enum CrossfeedRange: String, CaseIterable, Codable, Identifiable, Sendabl
         case .sub: return "Sub"
         case .bass: return "Bass"
         case .mid: return "Mid"
-        case .voice: return "Voice"
+        case .voice: return "Vocal"
         }
     }
 
     public var bandLabel: String {
         switch self {
-        case .sub: return "20 - 120Hz"
+        case .sub: return "20 - 80Hz"
         case .bass: return "20 - 300Hz"
         case .mid: return "20 - 1kHz"
-        case .voice: return "20 - 2kHz"
+        case .voice: return "20 - 3kHz"
         }
     }
 
     public var cutoffHz: Double {
         switch self {
-        case .sub: return 120
+        case .sub: return 80
         case .bass: return 300
         case .mid: return 1_000
-        case .voice: return 2_000
+        case .voice: return 3_000
         }
     }
 

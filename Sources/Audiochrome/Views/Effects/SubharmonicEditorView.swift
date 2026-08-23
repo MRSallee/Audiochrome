@@ -83,7 +83,6 @@ struct SubharmonicEditorView: View {
                         EffectPresetRow(
                             kind: .subharmonic,
                             title: preset.title,
-                            colorHex: markColorHex,
                             isSelected: settings.preset == preset
                         ) {
                             update { $0.apply(preset) }
@@ -125,7 +124,7 @@ struct SubharmonicEditorView: View {
 
     private var liveToken: String {
         guard identityKey != nil else { return "" }
-        return "\(liveSettings.signature)|\(liveColorHex)|\(appState.isSubharmonicComparing)"
+        return "\(liveSettings.signature)|\(liveSettings.preset.rawValue)|\(liveColorHex)|\(appState.isSubharmonicComparing)"
     }
 
     private func rememberIfEditing() {
@@ -146,7 +145,7 @@ struct SubharmonicEditorView: View {
         }
         .padding(.horizontal, MenuChrome.contentInset)
         .padding(.top, MenuChrome.menuPadding)
-        .padding(.bottom, MenuChrome.headerVerticalPadding + 6)
+        .padding(.bottom, MenuChrome.headerVerticalPadding)
     }
 
     private func detentRow<T: Equatable>(

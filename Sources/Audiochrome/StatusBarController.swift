@@ -317,7 +317,7 @@ final class StatusBarController: NSObject, ObservableObject {
         let presence = animate ? CGFloat(appState.audioEngine.outputLevel) : 0
         updateRestExpand(animate: animate, presence: presence)
         button?.image = StatusIconImage.make(
-            color: paint ?? .black,
+            color: paint ?? .white,
             barInk: hex.map { ProfileColorPalette.barInk(for: $0) },
             isEngaged: appState.isEQEngaged,
             bands: bands,

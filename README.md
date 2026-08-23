@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.6.0** — Per-device Crossfeed and Subharmonics, with EQ-style editors, plots, and Compare.  
+> **v1.6.1** — Effects can run without an EQ profile; Crossfeed/Subharmonics ranges, presets, and menu chrome are tighter.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

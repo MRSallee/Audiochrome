@@ -217,7 +217,8 @@ struct MenuBarView: View {
     ) -> some View {
         let mapping = appState.config.mapping(forIdentity: device.identityKey)
         let isRenaming = renamingIdentityKey == device.identityKey
-        let toggleDisabled = mapping.profileFilename == nil || eqToggleBlocked
+        let canProcess = mapping.profileFilename != nil || mapping.effects.isAudible
+        let toggleDisabled = (!canProcess && !mapping.enabled) || eqToggleBlocked
 
         return ZStack {
             if !isRenaming {
@@ -254,7 +255,7 @@ struct MenuBarView: View {
                 .allowsHitTesting(!toggleDisabled)
                 .tint(accent)
                 .layoutPriority(1)
-                .accessibilityLabel("EQ")
+                .accessibilityLabel("Processing")
                 .accessibilityValue(eqToggleBlocked ? "Unavailable" : (mapping.enabled ? "On" : "Off"))
                 .overlay {
                     // Absorb clicks that NSSwitch still accepts while disabled.
@@ -305,7 +306,7 @@ struct MenuBarView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: MenuChrome.textRowContentHeight)
         } else {
-            Text(isFocused ? "\(device.name) EQ" : device.name)
+            Text(device.name)
                 .font(.system(
                     size: MenuChrome.headerFontSize,
                     weight: isFocused ? MenuChrome.headerWeight : MenuChrome.bodyWeight
@@ -882,7 +883,7 @@ enum MenuChrome {
 
     static let headerFontSize: CGFloat = 13
     static let bodyFontSize: CGFloat = 13
-    /// Sub-header (“Active Profile”) and expanding headers (“Available Profiles”).
+    /// Sub-header (“Active EQ”) and expanding headers (“EQs”).
     static let sectionFontSize: CGFloat = 12
     static let headerWeight: Font.Weight = .bold
     static let sectionWeight: Font.Weight = .bold
@@ -904,7 +905,8 @@ enum MenuChrome {
     static let iconRowHeight: CGFloat = 34
     static let sectionRowHeight: CGFloat = 24
 
-    static let listIconSize: CGFloat = 18
+    /// Menu / Control Center list marks. Menu-bar status item stays 18.
+    static let listIconSize: CGFloat = 26
     static let chevronSize: CGFloat = 10
     /// Intrinsic width of a regular `NSSwitch` (filter toggles, Save chip).
     static let switchWidth: CGFloat = {
@@ -973,7 +975,7 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// “Active Profile” header + row + optional waveform.
+    /// “Active EQ” header + row + optional waveform.
     static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
         var height = MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
@@ -986,7 +988,7 @@ private enum OutputEQPanelMetrics {
         return height
     }
 
-    /// Permission slot: Active Profile header + message row + settings pill.
+    /// Permission slot: Active EQ header + message row + settings pill.
     /// Keep in lockstep with `audioPermissionPlaceholder` paddings.
     static func audioPermissionBlockHeight() -> CGFloat {
         MenuChrome.sectionTopPadding
@@ -1042,10 +1044,10 @@ private enum OutputEQPanelMetrics {
             height += activeProfileBlockHeight(hasProfile: hasProfile)
         }
 
+        height += disclosureRowSpacing + iconRowHeight // Create New EQ
         height += MenuChrome.otherProfilesSectionVerticalPadding
-        height += disclosureRowHeight // Available Profiles header
+        height += disclosureRowHeight // EQs header
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
-        height += disclosureRowSpacing + iconRowHeight // Create New Profile
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += EffectsSectionMetrics.height(progress: effectsProgress)
         return height
@@ -1082,7 +1084,7 @@ private struct OutputEQPanel: View {
     }
 
     private var profileTitle: String {
-        guard let filename = mapping.profileFilename else { return "No Profile" }
+        guard let filename = mapping.profileFilename else { return "None" }
         if let profile = profiles.first(where: { $0.filename == filename }) {
             return profile.displayName
         }
@@ -1111,6 +1113,11 @@ private struct OutputEQPanel: View {
             }
 
             activeProfileSection
+
+            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
+                .padding(.top, OutputEQPanelMetrics.disclosureRowSpacing)
+                .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+                .disabled(appState.needsAudioPermission)
 
             otherProfilesSection
                 .padding(.vertical, MenuChrome.otherProfilesSectionVerticalPadding)
@@ -1173,7 +1180,7 @@ private struct OutputEQPanel: View {
             } else {
                 let blockHeight = OutputEQPanelMetrics.activeProfileBlockHeight(hasProfile: hasProfile)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("Active Profile")
+                    Text("Active EQ")
                         .font(MenuChrome.sectionFont)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1225,10 +1232,10 @@ private struct OutputEQPanel: View {
         }
     }
 
-    /// Active Profile header + status line + Privacy & Security pill.
+    /// Active EQ header + status line + Privacy & Security pill.
     private var audioPermissionPlaceholder: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Active Profile")
+            Text("Active EQ")
                 .font(MenuChrome.sectionFont)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1236,7 +1243,7 @@ private struct OutputEQPanel: View {
                 .padding(.horizontal, MenuChrome.contentInset)
                 .padding(.top, MenuChrome.sectionTopPadding)
 
-            Text("System audio access required to EQ")
+            Text("System audio access required to process audio")
                 .font(MenuChrome.bodyFont)
                 .foregroundStyle(.primary)
                 .lineLimit(2)
@@ -1261,7 +1268,7 @@ private struct OutputEQPanel: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
-                title: "Available Profiles",
+                title: "EQs",
                 style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
@@ -1307,9 +1314,6 @@ private struct OutputEQPanel: View {
             .clipped()
             .opacity(otherProfilesProgress)
             .allowsHitTesting(otherProfilesProgress > 0.98)
-
-            PlusCommandRow(title: "Create New Profile", action: openCreateEditor)
-                .padding(.top, OutputEQPanelMetrics.disclosureRowSpacing)
         }
     }
 
@@ -1365,7 +1369,7 @@ struct CompareChip: View {
     private static let holdThreshold: TimeInterval = 0.18
 
     var body: some View {
-        Text("COMPARE")
+        Text("Compare")
             .font(MenuChrome.bodyFont)
             .foregroundStyle(isOn ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             .lineLimit(1)
@@ -1645,7 +1649,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                 Text(title)
                     .font(MenuChrome.bodyFont)
                     .fontWeight(.regular)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(hasProfile ? .primary : .secondary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -1655,14 +1659,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     }
 
                 if hasProfile, let onEdit {
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    EditSettingsButton(action: onEdit)
                 }
             }
             .padding(.horizontal, MenuChrome.contentInset)
@@ -2069,6 +2066,117 @@ private struct PlusCircleShape: Shape {
         path.move(to: pt(18.5, 12.5))
         path.addLine(to: pt(18.5, 24.5))
         return path
+    }
+}
+
+/// Trailing edit affordance — Tabler filled pencil.
+struct EditSettingsButton: View {
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            EditIcon()
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit")
+    }
+}
+
+/// Tabler filled `pencil` (24×24).
+struct EditIcon: View {
+    var body: some View {
+        EditIconShape()
+            .fill()
+            .foregroundStyle(.primary)
+            .frame(width: 16, height: 16)
+    }
+}
+
+private struct EditIconShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func map(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        var x: CGFloat = 12.085
+        var y: CGFloat = 6.5
+        path.move(to: map(x, y))
+
+        func line(_ nx: CGFloat, _ ny: CGFloat) {
+            x = nx
+            y = ny
+            path.addLine(to: map(x, y))
+        }
+        func relLine(_ dx: CGFloat, _ dy: CGFloat) {
+            line(x + dx, y + dy)
+        }
+        func relArc(radius: CGFloat, large: Bool, sweep: Bool, dx: CGFloat, dy: CGFloat) {
+            let x2 = x + dx
+            let y2 = y + dy
+            Self.addCircularArc(
+                &path,
+                from: map(x, y),
+                to: map(x2, y2),
+                radius: radius * min(sx, sy),
+                largeArc: large,
+                sweep: sweep
+            )
+            x = x2
+            y = y2
+        }
+
+        relLine(5.415, 5.415)
+        relLine(-8.793, 8.792)
+        relArc(radius: 1, large: false, sweep: true, dx: -0.707, dy: 0.293)
+        relLine(-4, 0)
+        relArc(radius: 1, large: false, sweep: true, dx: -1, dy: -1)
+        relLine(0, -4)
+        relArc(radius: 1, large: false, sweep: true, dx: 0.293, dy: -0.707)
+        path.closeSubpath()
+
+        x = 12.085 + 5.406
+        y = 6.5 - 2.698
+        path.move(to: map(x, y))
+        relArc(radius: 3.828, large: false, sweep: true, dx: 1.716, dy: 6.405)
+        relLine(-0.292, 0.293)
+        relLine(-5.415, -5.415)
+        relLine(0.293, -0.292)
+        relArc(radius: 3.83, large: false, sweep: true, dx: 3.698, dy: -0.991)
+        return path
+    }
+
+    private static func addCircularArc(
+        _ path: inout Path,
+        from start: CGPoint,
+        to end: CGPoint,
+        radius: CGFloat,
+        largeArc: Bool,
+        sweep: Bool
+    ) {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.0001 else { return }
+        let radius = max(radius, distance / 2 + 0.0001)
+        let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let rise = sqrt(max(0, radius * radius - (distance / 2) * (distance / 2)))
+        let direction: CGFloat = largeArc == sweep ? -1 : 1
+        let center = CGPoint(
+            x: mid.x + (-dy / distance) * rise * direction,
+            y: mid.y + (dx / distance) * rise * direction
+        )
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: Angle(radians: atan2(start.y - center.y, start.x - center.x)),
+            endAngle: Angle(radians: atan2(end.y - center.y, end.x - center.x)),
+            clockwise: !sweep
+        )
     }
 }
 

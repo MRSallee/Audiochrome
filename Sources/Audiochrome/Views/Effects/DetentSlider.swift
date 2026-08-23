@@ -2,19 +2,28 @@ import AppKit
 import SwiftUI
 
 enum DetentSliderMetrics {
-    static let thumb: CGFloat = 20
+    static let thumbWidth: CGFloat = 20
+    static let thumbHeight: CGFloat = 16
+    static let thumbCorner: CGFloat = 8
     static let track: CGFloat = 4
     static let dot: CGFloat = 3
     static let labelHeight: CGFloat = 14
-    static let trackToDots: CGFloat = 8
+    /// Gap from the track’s bottom edge to the tick.
+    static let trackToDots: CGFloat = 3
     static let dotsToLabels: CGFloat = 4
 
+    static var trackTop: CGFloat { (thumbHeight - track) / 2 }
+    static var trackBottom: CGFloat { trackTop + track }
+    static var dotsTop: CGFloat { trackBottom + trackToDots }
+    static var controlBottom: CGFloat { max(thumbHeight, dotsTop + dot) }
+
     static var height: CGFloat {
-        thumb + trackToDots + dot + dotsToLabels + labelHeight
+        controlBottom + dotsToLabels + labelHeight
     }
 }
 
-/// Discrete slider: filled track, thumb, dots, labels under each stop.
+/// Discrete slider: filled track, squat thumb, ticks under the track.
+/// The thumb draws last so it covers the active tick.
 struct DetentSlider<T: Equatable>: View {
     let stops: [T]
     let labels: [String]
@@ -29,40 +38,32 @@ struct DetentSlider<T: Equatable>: View {
     var body: some View {
         GeometryReader { geo in
             let count = max(stops.count, 2)
-            let inset = DetentSliderMetrics.thumb / 2
-            let span = max(geo.size.width - DetentSliderMetrics.thumb, 1)
+            let inset = DetentSliderMetrics.thumbWidth / 2
+            let span = max(geo.size.width - DetentSliderMetrics.thumbWidth, 1)
             let step = span / CGFloat(count - 1)
             let labelWidth = max(step, 36)
 
             let x = { (index: Int) -> CGFloat in
                 inset + CGFloat(index) * step
             }
-            let dotsY = DetentSliderMetrics.thumb + DetentSliderMetrics.trackToDots + DetentSliderMetrics.dot / 2
-            let labelsY = DetentSliderMetrics.thumb + DetentSliderMetrics.trackToDots + DetentSliderMetrics.dot
-                + DetentSliderMetrics.dotsToLabels + DetentSliderMetrics.labelHeight / 2
+            let dotsY = DetentSliderMetrics.dotsTop + DetentSliderMetrics.dot / 2
+            let labelsY = DetentSliderMetrics.controlBottom
+                + DetentSliderMetrics.dotsToLabels
+                + DetentSliderMetrics.labelHeight / 2
 
             ZStack(alignment: .topLeading) {
                 Capsule(style: .continuous)
                     .fill(Color.primary.opacity(0.12))
                     .frame(height: DetentSliderMetrics.track)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, (DetentSliderMetrics.thumb - DetentSliderMetrics.track) / 2)
+                    .padding(.top, DetentSliderMetrics.trackTop)
 
                 if showsFill {
                     Capsule(style: .continuous)
                         .fill(Color(nsColor: .controlAccentColor))
                         .frame(width: x(selectedIndex), height: DetentSliderMetrics.track)
-                        .padding(.top, (DetentSliderMetrics.thumb - DetentSliderMetrics.track) / 2)
+                        .padding(.top, DetentSliderMetrics.trackTop)
                 }
-
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: DetentSliderMetrics.thumb, height: DetentSliderMetrics.thumb)
-                    .shadow(color: .black.opacity(0.22), radius: 1.5, y: 0.5)
-                    .overlay {
-                        Circle().strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
-                    }
-                    .offset(x: CGFloat(selectedIndex) * step)
 
                 ForEach(0..<count, id: \.self) { index in
                     Circle()
@@ -95,6 +96,16 @@ struct DetentSlider<T: Equatable>: View {
                             )
                     }
                 }
+
+                RoundedRectangle(cornerRadius: DetentSliderMetrics.thumbCorner, style: .continuous)
+                    .fill(Color.white)
+                    .frame(width: DetentSliderMetrics.thumbWidth, height: DetentSliderMetrics.thumbHeight)
+                    .shadow(color: .black.opacity(0.22), radius: 1.5, y: 0.5)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: DetentSliderMetrics.thumbCorner, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+                    }
+                    .offset(x: CGFloat(selectedIndex) * step)
             }
             .contentShape(Rectangle())
             .gesture(

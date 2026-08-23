@@ -31,7 +31,7 @@ public enum SubharmonicAmount: Int, CaseIterable, Codable, Identifiable, Sendabl
 public enum SubharmonicRange: String, CaseIterable, Codable, Identifiable, Sendable {
     case deep
     case sub
-    case bass
+    case extended
 
     public var id: String { rawValue }
 
@@ -39,7 +39,7 @@ public enum SubharmonicRange: String, CaseIterable, Codable, Identifiable, Senda
         switch self {
         case .deep: return "Deep"
         case .sub: return "Sub"
-        case .bass: return "Bass"
+        case .extended: return "Extended"
         }
     }
 
@@ -63,17 +63,32 @@ public enum SubharmonicRange: String, CaseIterable, Codable, Identifiable, Senda
     public var extractHz: Double {
         switch self {
         case .deep: return 80
-        case .sub: return 120
-        case .bass: return 180
+        case .sub: return 160
+        case .extended: return 240
         }
     }
 
     /// One-pole on the square-wave divider (keeps the sub in-band).
     public var subLowpassHz: Double {
         switch self {
-        case .deep: return 42
-        case .sub: return 62
-        case .bass: return 90
+        case .deep: return 40
+        case .sub: return 80
+        case .extended: return 120
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "deep": self = .deep
+        case "sub": self = .sub
+        case "extended", "bass": self = .extended
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Unknown SubharmonicRange '\(raw)'"
+            )
         }
     }
 }
@@ -106,10 +121,10 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
 
     public init(
         enabled: Bool = false,
-        amount: SubharmonicAmount = SubharmonicPreset.subtle.tune.amount,
-        range: SubharmonicRange = SubharmonicPreset.subtle.tune.range,
+        amount: SubharmonicAmount = SubharmonicPreset.punch.tune.amount,
+        range: SubharmonicRange = SubharmonicPreset.punch.tune.range,
         custom: SubharmonicTune = .middle,
-        preset: SubharmonicPreset = .subtle
+        preset: SubharmonicPreset = .punch
     ) {
         self.enabled = enabled
         self.amount = amount
@@ -126,9 +141,9 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         amount = try container.decodeIfPresent(SubharmonicAmount.self, forKey: .amount)
-            ?? SubharmonicPreset.subtle.tune.amount
+            ?? SubharmonicPreset.punch.tune.amount
         range = try container.decodeIfPresent(SubharmonicRange.self, forKey: .range)
-            ?? SubharmonicPreset.subtle.tune.range
+            ?? SubharmonicPreset.punch.tune.range
         custom = try container.decodeIfPresent(SubharmonicTune.self, forKey: .custom) ?? .middle
         preset = try container.decodeIfPresent(SubharmonicPreset.self, forKey: .preset)
             ?? SubharmonicPreset.inferred(amount: amount, range: range)
@@ -180,8 +195,8 @@ public enum SubharmonicPreset: String, CaseIterable, Codable, Identifiable, Send
     public var title: String {
         switch self {
         case .subtle: return "Subtle"
-        case .punch: return "Punch"
-        case .club: return "Club"
+        case .punch: return "Strong"
+        case .club: return "Stronger"
         case .custom: return "Custom"
         }
     }
@@ -193,7 +208,7 @@ public enum SubharmonicPreset: String, CaseIterable, Codable, Identifiable, Send
         case .punch:
             return SubharmonicTune(amount: .fifty, range: .sub)
         case .club:
-            return SubharmonicTune(amount: .seventyFive, range: .bass)
+            return SubharmonicTune(amount: .seventyFive, range: .extended)
         case .custom:
             return .middle
         }

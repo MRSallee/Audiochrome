@@ -13,7 +13,7 @@ struct HeaderCommitControls: View {
         static let cornerRadius: CGFloat = 6
         /// Matches `ValuePill` default fill.
         static let chromeOpacity = 0.10
-        static let iconSize: CGFloat = MenuChrome.listIconSize
+        static let iconSize: CGFloat = 18
         static let iconNudgeX: CGFloat = -2
     }
 
@@ -65,7 +65,7 @@ private struct CloseXIcon: View {
         CloseXShape()
             .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
             .foregroundStyle(.tertiary)
-            .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+            .frame(width: 18, height: 18)
             .accessibilityHidden(true)
     }
 }

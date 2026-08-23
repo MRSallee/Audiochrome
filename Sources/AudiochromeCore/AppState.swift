@@ -353,7 +353,7 @@ public final class AppState: ObservableObject {
         refreshAll()
         guard let mapping = activeMapping,
               mapping.enabled,
-              mapping.profileFilename != nil
+              mapping.profileFilename != nil || mapping.effects.isAudible
         else { return }
         if case .engaged = engineStatus { return }
 
@@ -380,7 +380,8 @@ public final class AppState: ObservableObject {
         // Icon / animation reflect *actual* processing, not just an armed toggle.
         guard case .engaged = engineStatus else { return false }
         guard let mapping = activeMapping else { return false }
-        return mapping.enabled && mapping.profileFilename != nil
+        return mapping.enabled
+            && (mapping.profileFilename != nil || mapping.effects.isAudible)
     }
 
     public var needsAudioPermission: Bool {
@@ -393,9 +394,9 @@ public final class AppState: ObservableObject {
     }
 
     public var activeProfileColorHex: String? {
-        guard isEQEngaged, let mapping = activeMapping else { return nil }
-        return mapping.profileFilename.map { colorHex(forProfile: $0, forIdentity: activeMappingIdentityKey) }
-            ?? mapping.colorHex
+        guard isEQEngaged, let mapping = activeMapping,
+              let filename = mapping.profileFilename else { return nil }
+        return colorHex(forProfile: filename, forIdentity: activeMappingIdentityKey)
     }
 
     public var activeProfileColor: Color {
@@ -555,7 +556,9 @@ public final class AppState: ObservableObject {
             let fileURL = url.appendingPathComponent(current)
             if !FileManager.default.fileExists(atPath: fileURL.path) {
                 mapping.profileFilename = nil
-                mapping.enabled = false
+                if !mapping.effects.isAudible {
+                    mapping.enabled = false
+                }
             }
         }
 
@@ -565,13 +568,14 @@ public final class AppState: ObservableObject {
         forceEngineResync()
     }
 
-    /// Inactive outputs stay listed when they have a profile or a custom profiles folder
-    /// (so Change Folder doesn’t yank the row if the selection is cleared).
+    /// Inactive outputs stay listed when they have a profile, enabled effects, or a
+    /// custom profiles folder (so Change Folder doesn’t yank the row if the selection is cleared).
     public func shouldListInactiveOutput(_ identityKey: String) -> Bool {
         guard config.customEQPerDevice else { return false }
         guard identityKey != AppConfig.allAudioIdentityKey else { return false }
         let mapping = config.mapping(forIdentity: identityKey)
         if mapping.profileFilename != nil { return true }
+        if mapping.effects.isAudible { return true }
         let path = mapping.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return !path.isEmpty
     }
@@ -645,10 +649,10 @@ public final class AppState: ObservableObject {
     public func setEnabled(forIdentity identityKey: String, enabled: Bool) {
         let key = mappingIdentityKey(for: identityKey)
         var mapping = config.mapping(forIdentity: key)
-        if enabled, mapping.profileFilename == nil {
+        if enabled, mapping.profileFilename == nil, !mapping.effects.isAudible {
             return
         }
-        // Never arm live EQ without capture permission (engineStatus can lag TCC briefly).
+        // Never arm live processing without capture permission (engineStatus can lag TCC briefly).
         if enabled, key == activeMappingIdentityKey,
            SystemAudioPermission.check() != .authorized {
             noteNeedsAudioPermission()
@@ -659,14 +663,12 @@ public final class AppState: ObservableObject {
         configStore.save(config)
         if !enabled {
             isEQComparing = false
-            isCrossfeedComparing = false
-            isSubharmonicComparing = false
         }
         objectWillChange.send()
         syncEngine()
     }
 
-    /// Toggle EQ for the current default output (used by status-item right-click).
+    /// Toggle processing for the current default output (used by status-item right-click).
     public func toggleActiveEQ() {
         guard let key = activeMappingIdentityKey else { return }
         if SystemAudioPermission.check() != .authorized {
@@ -674,7 +676,7 @@ public final class AppState: ObservableObject {
             return
         }
         let mapping = config.mapping(forIdentity: key)
-        if !mapping.enabled, mapping.profileFilename == nil {
+        if !mapping.enabled, mapping.profileFilename == nil, !mapping.effects.isAudible {
             return
         }
         setEnabled(forIdentity: key, enabled: !mapping.enabled)
@@ -822,7 +824,7 @@ public final class AppState: ObservableObject {
             mapping.enabled = true
             // Color follows the profile.
             mapping.colorHex = colorHex(forProfile: filename, forIdentity: key)
-        } else {
+        } else if !mapping.effects.isAudible {
             mapping.enabled = false
         }
         config.setMapping(mapping, forIdentity: key)
@@ -876,7 +878,9 @@ public final class AppState: ObservableObject {
                 .standardizedFileURL
             guard outputDir == directoryURL else { continue }
             mapping.profileFilename = nil
-            mapping.enabled = false
+            if !mapping.effects.isAudible {
+                mapping.enabled = false
+            }
             config.setMapping(mapping, forIdentity: outputKey)
             if outputKey == activeMappingIdentityKey {
                 clearedActiveMapping = true
@@ -1260,10 +1264,20 @@ public final class AppState: ObservableObject {
         let liveDraft = profileEditor.flatMap { draft -> ProfileEditorDraft? in
             mappingIdentityKey(for: draft.identityKey) == mappingKey ? draft : nil
         }
-        guard mapping.enabled || liveDraft != nil, let filename = mapping.profileFilename ?? liveDraft.map({ _ in "editor" }) else {
+        var effects = mapping.effects
+        if isCrossfeedComparing {
+            effects.crossfeed.enabled = false
+        }
+        if isSubharmonicComparing {
+            effects.subharmonic.enabled = false
+        }
+        let eqOn = liveDraft != nil || (mapping.enabled && mapping.profileFilename != nil)
+        let effectsOn = mapping.enabled && effects.isAudible
+        let filename = mapping.profileFilename ?? liveDraft.map({ _ in "editor" }) ?? "fxonly"
+        guard eqOn || effectsOn else {
             let deviceChanged = lastSyncedDefaultUID != nil && lastSyncedDefaultUID != device.uid
             if deviceChanged {
-                // Output moved while EQ was off — tear down the old tap.
+                // Output moved while processing was off — tear down the old tap.
                 audioEngine.stop(reason: .outputChanged)
             } else if lastSyncedEnabled != false {
                 // Soft off: fade to passthrough; tap stays warm until audio goes silent.
@@ -1307,21 +1321,16 @@ public final class AppState: ObservableObject {
             break
         }
 
-        var effects = mapping.effects
-        if isCrossfeedComparing {
-            effects.crossfeed.enabled = false
-        }
-        if isSubharmonicComparing {
-            effects.subharmonic.enabled = false
-        }
         var effectsToken = effects.signature
         if isCrossfeedComparing { effectsToken += ":xfcmp" }
         if isSubharmonicComparing { effectsToken += ":shcmp" }
         let syncToken: String
         if let liveDraft {
             syncToken = "editor:\(liveDraft.revision)" + (isEQComparing ? ":cmp" : "") + "#\(effectsToken)"
-        } else {
+        } else if eqOn {
             syncToken = filename + (isEQComparing ? ":cmp" : "") + "#\(effectsToken)"
+        } else {
+            syncToken = "fxonly#\(effectsToken)"
         }
 
         // Skip re-apply when nothing meaningful changed (prevents periodic filter resets/pops).
@@ -1358,7 +1367,7 @@ public final class AppState: ObservableObject {
             } else {
                 profile = liveDraft.eqProfile
             }
-        } else {
+        } else if eqOn {
             let url = profilesDirectoryURL(forIdentity: mappingKey)
                 .appendingPathComponent(filename)
             guard let parsed = try? ProfileParser.parseFile(at: url) else {
@@ -1375,6 +1384,8 @@ public final class AppState: ObservableObject {
             } else {
                 profile = parsed
             }
+        } else {
+            profile = EQProfile(name: "Passthrough", linked: ChannelEQ())
         }
 
         do {
