@@ -1,17 +1,24 @@
 import Foundation
 
-/// Classic octave-down subharmonic synth (zero-crossing divider), mid-only.
-///
-/// Extract the bass from (L+R)/2, toggle a square on each rising zero,
-/// amplitude-follow it, lowpass, then add equally to both ears.
+/// Octave-down: time rising zeros, emit a sine at f/2, add it.
+/// Dry is never scaled. Intervals outside 25–80 Hz are ignored.
 /// Audio-thread process does not allocate.
 final class SubharmonicProcessor: @unchecked Sendable {
+    private static let twoPi = Double.pi * 2
+    private static let lookaheadSeconds = 0.040
+    private static let maxDelay = 16_384
+    private static let dcBlockHz = 10.0
+
     private struct Params: Equatable {
         var enabled = false
         var extractCoeff = 0.0
         var subCoeff = 0.0
+        var hpCoeff = 0.0
         var attackCoeff = 0.0
         var releaseCoeff = 0.0
+        var minPeriodSamples = 0.0
+        var maxPeriodSamples = 0.0
+        var delaySamples = 0
         var mix = 0.0
         var sampleRate = 0.0
 
@@ -22,14 +29,25 @@ final class SubharmonicProcessor: @unchecked Sendable {
     private var pending: Params?
     private var params = Params.bypassed
 
-    private var extractLP = 0.0
+    private var extract1 = 0.0
+    private var extract2 = 0.0
     private var extractHPX = 0.0
     private var extractHPY = 0.0
     private var subLP = 0.0
     private var env = 0.0
-    private var prevExtract = 0.0
-    private var highSide = false
-    private var squarePositive = false
+    private var prevBass = 0.0
+    private var samplesSinceCrossing = 1_000_000.0
+    private var lastPeriod = 0.0
+    private var phase = 0.0
+
+    private var delayL: [Double]
+    private var delayR: [Double]
+    private var writeIndex = 0
+
+    init() {
+        delayL = [Double](repeating: 0, count: Self.maxDelay)
+        delayR = [Double](repeating: 0, count: Self.maxDelay)
+    }
 
     func update(settings: SubharmonicSettings, sampleRate: Double) {
         let rate = max(sampleRate, 1)
@@ -38,9 +56,15 @@ final class SubharmonicProcessor: @unchecked Sendable {
             next.enabled = true
             next.extractCoeff = 1.0 - exp(-2.0 * Double.pi * settings.range.extractHz / rate)
             next.subCoeff = 1.0 - exp(-2.0 * Double.pi * settings.range.subLowpassHz / rate)
-            next.attackCoeff = 1.0 - exp(-1.0 / (0.004 * rate))
-            next.releaseCoeff = 1.0 - exp(-1.0 / (0.070 * rate))
-            next.mix = settings.amount.mix
+            next.hpCoeff = exp(-2.0 * Double.pi * Self.dcBlockHz / rate)
+            next.attackCoeff = 1.0 - exp(-1.0 / (0.008 * rate))
+            next.releaseCoeff = 1.0 - exp(-1.0 / (0.080 * rate))
+            next.minPeriodSamples = rate / 80
+            next.maxPeriodSamples = rate / 25
+            if settings.lookahead {
+                next.delaySamples = min(Self.maxDelay - 1, max(0, Int((Self.lookaheadSeconds * rate).rounded())))
+            }
+            next.mix = settings.outputMuted ? 0 : settings.amount.mix
             next.sampleRate = rate
         }
 
@@ -55,7 +79,6 @@ final class SubharmonicProcessor: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Audio-thread only.
     func processPlanar(
         left: UnsafeMutablePointer<Float>,
         right: UnsafeMutablePointer<Float>,
@@ -64,51 +87,72 @@ final class SubharmonicProcessor: @unchecked Sendable {
         adoptPendingIfNeeded()
         guard params.enabled, frames > 0 else { return }
         for i in 0..<frames {
-            let wet = synthesize(mid: (Double(left[i]) + Double(right[i])) * 0.5)
-            left[i] += Float(wet)
-            right[i] += Float(wet)
+            let pair = processPair(left: Double(left[i]), right: Double(right[i]))
+            left[i] = Float(pair.left)
+            right[i] = Float(pair.right)
         }
     }
 
-    /// Audio-thread only. Extra channels are left untouched.
     func processInterleaved(_ buffer: UnsafeMutablePointer<Float>, frames: Int, channels: Int) {
         adoptPendingIfNeeded()
         guard params.enabled, frames > 0, channels >= 2 else { return }
         for i in 0..<frames {
             let base = i * channels
-            let wet = synthesize(mid: (Double(buffer[base]) + Double(buffer[base + 1])) * 0.5)
-            buffer[base] += Float(wet)
-            buffer[base + 1] += Float(wet)
+            let pair = processPair(left: Double(buffer[base]), right: Double(buffer[base + 1]))
+            buffer[base] = Float(pair.left)
+            buffer[base + 1] = Float(pair.right)
         }
     }
 
-    private func synthesize(mid: Double) -> Double {
-        // DC-block then one-pole LPF — the divider should only see bass.
-        let hp = mid - extractHPX + 0.995 * extractHPY
-        extractHPX = mid
-        extractHPY = hp
-        extractLP += params.extractCoeff * (hp - extractLP)
+    private func processPair(left: Double, right: Double) -> (left: Double, right: Double) {
+        let bass = extract(mid: (left + right) * 0.5)
+        samplesSinceCrossing += 1
+        let hyst = max(0.0004, env * 0.06)
+        if prevBass <= hyst, bass > hyst {
+            let interval = samplesSinceCrossing
+            if interval >= params.minPeriodSamples, interval <= params.maxPeriodSamples {
+                lastPeriod = interval
+            }
+            samplesSinceCrossing = 0
+        }
+        prevBass = bass
 
-        let level = abs(extractLP)
+        let level = abs(bass)
         if level > env {
             env += params.attackCoeff * (level - env)
         } else {
             env += params.releaseCoeff * (level - env)
         }
 
-        let hyst = max(0.0012, env * 0.06)
-        if !highSide, extractLP > hyst, prevExtract <= hyst {
-            squarePositive.toggle()
-            highSide = true
-        } else if highSide, extractLP < -hyst {
-            highSide = false
-        }
-        prevExtract = extractLP
+        delayL[writeIndex] = left
+        delayR[writeIndex] = right
+        let delay = params.delaySamples
+        let readIndex = (writeIndex - delay + Self.maxDelay) % Self.maxDelay
+        let dryL = delayL[readIndex]
+        let dryR = delayR[readIndex]
+        writeIndex = (writeIndex + 1) % Self.maxDelay
 
-        let raw = (squarePositive ? 1.0 : -1.0) * env
+        var raw = 0.0
+        if lastPeriod > 1 {
+            phase += Double.pi / lastPeriod
+            if phase > Self.twoPi {
+                phase -= Self.twoPi
+            }
+            raw = sin(phase) * env
+        }
         subLP += params.subCoeff * (raw - subLP)
-        let shaped = tanh(subLP * 1.6)
-        return shaped * params.mix
+        let wet = subLP * params.mix
+        return (dryL + wet, dryR + wet)
+    }
+
+    private func extract(mid: Double) -> Double {
+        let hp = mid - extractHPX + params.hpCoeff * extractHPY
+        extractHPX = mid
+        extractHPY = hp
+        let a = params.extractCoeff
+        extract1 += a * (hp - extract1)
+        extract2 += a * (extract1 - extract2)
+        return extract2
     }
 
     private func adoptPendingIfNeeded() {
@@ -119,21 +163,26 @@ final class SubharmonicProcessor: @unchecked Sendable {
 
         guard let next, next != params else { return }
         let rateChanged = abs(next.sampleRate - params.sampleRate) > 0.5
-        let turningOn = next.enabled && !params.enabled
+        let delayChanged = next.delaySamples != params.delaySamples
         params = next
-        if !next.enabled || rateChanged || turningOn {
+        if !next.enabled || rateChanged || delayChanged {
             resetMemory()
         }
     }
 
     private func resetMemory() {
-        extractLP = 0
+        extract1 = 0
+        extract2 = 0
         extractHPX = 0
         extractHPY = 0
         subLP = 0
         env = 0
-        prevExtract = 0
-        highSide = false
-        squarePositive = false
+        prevBass = 0
+        samplesSinceCrossing = 1_000_000
+        lastPeriod = 0
+        phase = 0
+        writeIndex = 0
+        for i in delayL.indices { delayL[i] = 0 }
+        for i in delayR.indices { delayR[i] = 0 }
     }
 }

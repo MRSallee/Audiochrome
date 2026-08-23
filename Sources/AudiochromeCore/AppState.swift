@@ -1269,7 +1269,8 @@ public final class AppState: ObservableObject {
             effects.crossfeed.enabled = false
         }
         if isSubharmonicComparing {
-            effects.subharmonic.enabled = false
+            // Mute the add only — keep enabled so 40 ms lock delay stays aligned.
+            effects.subharmonic.outputMuted = true
         }
         let eqOn = liveDraft != nil || (mapping.enabled && mapping.profileFilename != nil)
         let effectsOn = mapping.enabled && effects.isAudible

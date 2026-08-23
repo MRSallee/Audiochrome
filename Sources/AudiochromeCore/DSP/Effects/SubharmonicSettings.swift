@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mix of the generated octave-down. UI 100% is a safe wet gain, not 1:1 add.
+/// Mix of the generated octave-down.
 public enum SubharmonicAmount: Int, CaseIterable, Codable, Identifiable, Sendable {
     case ten = 10
     case twentyFive = 25
@@ -11,8 +11,8 @@ public enum SubharmonicAmount: Int, CaseIterable, Codable, Identifiable, Sendabl
     public var id: Int { rawValue }
     public var title: String { "\(rawValue)%" }
 
-    /// Linear wet gain. Full = 0.42 so a 0 dBFS kick doesn’t clip the sum.
-    public var mix: Double { 0.42 * Double(rawValue) / 100.0 }
+    /// Linear wet gain. 100% matches the extracted envelope (Audacity-style add).
+    public var mix: Double { Double(rawValue) / 100.0 }
 
     /// Wet add vs dry, `20 · log10(mix)`.
     public var wetLabel: String {
@@ -68,7 +68,7 @@ public enum SubharmonicRange: String, CaseIterable, Codable, Identifiable, Senda
         }
     }
 
-    /// One-pole on the square-wave divider (keeps the sub in-band).
+    /// One-pole on the generated sub (keeps the octave in-band).
     public var subLowpassHz: Double {
         switch self {
         case .deep: return 40
@@ -116,6 +116,10 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
     /// Which list row is selected. Tweaking sliders locks this to Custom
     /// even if the values match a factory preset.
     public var preset: SubharmonicPreset
+    /// 40 ms lookahead so lock can land on the kick. Delays processed audio.
+    public var lookahead: Bool
+    /// Engine-only: Compare mutes the add without dropping the delay.
+    public var outputMuted: Bool
 
     public static let off = SubharmonicSettings()
 
@@ -124,17 +128,21 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
         amount: SubharmonicAmount = SubharmonicPreset.punch.tune.amount,
         range: SubharmonicRange = SubharmonicPreset.punch.tune.range,
         custom: SubharmonicTune = .middle,
-        preset: SubharmonicPreset = .punch
+        preset: SubharmonicPreset = .punch,
+        lookahead: Bool = false,
+        outputMuted: Bool = false
     ) {
         self.enabled = enabled
         self.amount = amount
         self.range = range
         self.custom = custom
         self.preset = preset
+        self.lookahead = lookahead
+        self.outputMuted = outputMuted
     }
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, amount, range, custom, preset
+        case enabled, amount, range, custom, preset, lookahead
     }
 
     public init(from decoder: Decoder) throws {
@@ -147,6 +155,8 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
         custom = try container.decodeIfPresent(SubharmonicTune.self, forKey: .custom) ?? .middle
         preset = try container.decodeIfPresent(SubharmonicPreset.self, forKey: .preset)
             ?? SubharmonicPreset.inferred(amount: amount, range: range)
+        lookahead = try container.decodeIfPresent(Bool.self, forKey: .lookahead) ?? false
+        outputMuted = false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -156,13 +166,14 @@ public struct SubharmonicSettings: Codable, Equatable, Sendable {
         try container.encode(range, forKey: .range)
         try container.encode(custom, forKey: .custom)
         try container.encode(preset, forKey: .preset)
+        try container.encode(lookahead, forKey: .lookahead)
     }
 
     public var selectedPreset: SubharmonicPreset { preset }
 
     public var signature: String {
         let on = enabled ? 1 : 0
-        return "\(on):\(amount.rawValue):\(range.rawValue)"
+        return "\(on):\(amount.rawValue):\(range.rawValue):\(lookahead ? 1 : 0):\(outputMuted ? 1 : 0)"
     }
 
     public mutating func apply(_ preset: SubharmonicPreset) {

@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.6.1** — Effects can run without an EQ profile; Crossfeed/Subharmonics ranges, presets, and menu chrome are tighter.  
+> **v1.6.2** — Subharmonics locks a sine an octave down, with optional Timing Lock.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

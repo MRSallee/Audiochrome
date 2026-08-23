@@ -112,7 +112,8 @@ struct SubharmonicEditorView: View {
             ) { range in
                 tweak { $0.range = range }
             }
-            .padding(.bottom, MenuChrome.contentInset)
+
+            lookaheadRow
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .onAppear { rememberIfEditing() }
@@ -124,7 +125,7 @@ struct SubharmonicEditorView: View {
 
     private var liveToken: String {
         guard identityKey != nil else { return "" }
-        return "\(liveSettings.signature)|\(liveSettings.preset.rawValue)|\(liveColorHex)|\(appState.isSubharmonicComparing)"
+        return "\(liveSettings.signature)|\(liveSettings.preset.rawValue)|\(liveColorHex)|\(appState.isSubharmonicComparing)|\(liveSettings.lookahead)"
     }
 
     private func rememberIfEditing() {
@@ -189,6 +190,41 @@ struct SubharmonicEditorView: View {
             )
             .padding(.horizontal, MenuChrome.contentInset)
             .padding(.bottom, 14)
+        }
+    }
+
+    private var lookaheadRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Divider()
+                .padding(.horizontal, MenuChrome.dividerInset)
+
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Timing Lock")
+                        .font(MenuChrome.bodyFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text("Adds 40ms delay to all audio.")
+                        .font(Font(NSFont.systemFont(ofSize: 11, weight: .regular)))
+                        .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .offset(y: 1)
+
+                Toggle("", isOn: Binding(
+                    get: { settings.lookahead },
+                    set: { on in update { $0.lookahead = on } }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .focusEffectDisabled()
+                .focusable(false)
+                .layoutPriority(1)
+            }
+            .padding(.horizontal, MenuChrome.contentInset)
+            .padding(.top, MenuChrome.headerVerticalPadding)
+            .padding(.bottom, MenuChrome.contentInset)
         }
     }
 
