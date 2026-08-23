@@ -81,6 +81,11 @@ struct MenuBarView: View {
         activePanelProgress > 0.5
     }
 
+    private var isLastOtherDeviceExpanded: Bool {
+        guard let last = otherDevices.last else { return false }
+        return expandedOtherDeviceKey == last.identityKey && otherDevicePanelProgress > 0.5
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             activeOutputHeader
@@ -103,14 +108,14 @@ struct MenuBarView: View {
                 }
 
                 if !unlistedDevices.isEmpty {
-                    // Grouped EQ panel already has a bottom rule; stacking another
-                    // divider on it doubles the line when no other-output rows sit between.
-                    if !otherDevices.isEmpty {
+                    // Grouped EQ panel already has a bottom rule; skip when the
+                    // last other device is expanded so it doesn’t double up.
+                    if !otherDevices.isEmpty, !isLastOtherDeviceExpanded {
                         Divider().padding(.horizontal, MenuChrome.dividerInset)
                     }
                     otherDevicesDisclosure
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
-                } else if !otherDevices.isEmpty {
+                } else if !otherDevices.isEmpty, !isLastOtherDeviceExpanded {
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
                 }
 
@@ -336,7 +341,6 @@ struct MenuBarView: View {
             effectsProgress: effectsProgress.wrappedValue,
             showsLeadingDivider: false
         )
-        let mapping = appState.config.mapping(forIdentity: identityKey)
         return MenuGroupedSection {
             OutputEQPanel(
                 identityKey: identityKey,
@@ -349,7 +353,7 @@ struct MenuBarView: View {
         }
         .frame(height: max(0, progress) * height, alignment: .top)
         .clipped()
-        .opacity(progress * (mapping.enabled ? 1 : MenuChrome.permissionLockedOpacity))
+        .opacity(progress)
         .allowsHitTesting(progress > 0.98)
     }
 
@@ -908,6 +912,9 @@ enum MenuChrome {
 
     /// Menu / Control Center list marks. Menu-bar status item stays 18.
     static let listIconSize: CGFloat = 26
+    /// Selected profile / effect while the device toggle is off.
+    static let pausedMarkPlate = Color(nsColor: .systemGray)
+    static let pausedMarkInk = Color.white
     static let chevronSize: CGFloat = 10
     /// Intrinsic width of a regular `NSSwitch` (filter toggles, Save chip).
     static let switchWidth: CGFloat = {
@@ -1030,7 +1037,6 @@ private enum OutputEQPanelMetrics {
     ) -> CGFloat {
         let mapping = appState.config.mapping(forIdentity: identityKey)
         let profiles = appState.profiles(forIdentity: identityKey)
-        let otherCount = profiles.filter { $0.filename != mapping.profileFilename }.count
         let hasProfile = mapping.profileFilename != nil
 
         var height: CGFloat = 0
@@ -1047,7 +1053,7 @@ private enum OutputEQPanelMetrics {
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // EQs header
-        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: otherCount)
+        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: profiles.count)
         height += iconRowHeight // Create New EQ
         if EffectsFeature.isEnabled, DeviceEffects.listedKinds.count > 0 {
             height += MenuChrome.otherProfilesSectionVerticalPadding
@@ -1077,10 +1083,6 @@ private struct OutputEQPanel: View {
 
     private var profiles: [ProfileFile] {
         appState.profiles(forIdentity: identityKey)
-    }
-
-    private var otherProfiles: [ProfileFile] {
-        profiles.filter { $0.filename != mapping.profileFilename }
     }
 
     private var hasProfile: Bool {
@@ -1204,6 +1206,7 @@ private struct OutputEQPanel: View {
                             appState.colorHex(forProfile: $0, forIdentity: identityKey)
                         },
                         hasProfile: hasProfile,
+                        isPaused: hasProfile && !mapping.enabled,
                         showColorPicker: showColorPicker,
                         colorPicker: { colorPopover },
                         onEdit: hasProfile ? { openEditEditor() } : nil
@@ -1219,7 +1222,8 @@ private struct OutputEQPanel: View {
                         ZStack(alignment: .topTrailing) {
                             ProfileWaveformView(
                                 preview: appState.eqFrequencyResponse(forIdentity: identityKey),
-                                colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey)
+                                colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey),
+                                isPaused: !mapping.enabled
                             )
                             .frame(height: MenuChrome.waveformHeight)
 
@@ -1270,7 +1274,7 @@ private struct OutputEQPanel: View {
     }
 
     private var otherProfilesSection: some View {
-        let profileCount = otherProfiles.count
+        let profileCount = profiles.count
         let scrollHeight = OutputEQPanelMetrics.otherProfilesScrollHeight(profileCount: profileCount)
         let bodyHeight = OutputEQPanelMetrics.otherProfilesExpandedBodyHeight(profileCount: profileCount)
         let needsScroll = profileCount > OutputEQPanelMetrics.maxVisibleOtherProfileRows
@@ -1278,6 +1282,7 @@ private struct OutputEQPanel: View {
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
                 title: "Available EQs",
+                subtitle: profiles.count == 1 ? "1 profile" : "\(profiles.count) profiles",
                 style: .disclosure,
                 trailing: otherProfilesProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
@@ -1291,16 +1296,21 @@ private struct OutputEQPanel: View {
                 if scrollHeight > 0 {
                     ScrollView(.vertical, showsIndicators: needsScroll) {
                         VStack(alignment: .leading, spacing: OutputEQPanelMetrics.disclosureRowSpacing) {
-                            ForEach(otherProfiles) { profile in
+                            ForEach(profiles) { profile in
                                 OtherProfileRow(
                                     profile: profile,
                                     colorHex: appState.colorHex(
                                         forProfile: profile.filename,
                                         forIdentity: identityKey
-                                    )
+                                    ),
+                                    isSelected: profile.filename == mapping.profileFilename,
+                                    isPaused: profile.filename == mapping.profileFilename && !mapping.enabled
                                 ) {
                         popoverChrome.animatingDisclosure {
-                            appState.setProfile(forIdentity: identityKey, filename: profile.filename)
+                            let filename = profile.filename == mapping.profileFilename
+                                ? nil
+                                : profile.filename
+                            appState.setProfile(forIdentity: identityKey, filename: filename)
                         }
                     } onDelete: {
                                     popoverChrome.animatingDisclosure {
@@ -1426,10 +1436,12 @@ struct CompareChip: View {
 struct ProfileWaveformView: View {
     let preview: EQFrequencyResponsePreview?
     let colorHex: String
+    /// Home panel only — device toggle off. Editor stays in profile color.
+    var isPaused: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     private var color: Color {
-        colorHex.profileColor(.curve, scheme: colorScheme)
+        isPaused ? MenuChrome.pausedMarkPlate : colorHex.profileColor(.curve, scheme: colorScheme)
     }
 
     private static let verticalInset: CGFloat = 2
@@ -1625,6 +1637,7 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
     let accent: Color
     var colorHex: String? = nil
     let hasProfile: Bool
+    var isPaused: Bool = false
     @Binding var showColorPicker: Bool
     @ViewBuilder let colorPicker: () -> ColorPicker
     var onEdit: (() -> Void)? = nil
@@ -1646,7 +1659,8 @@ private struct ActiveProfileRow<ColorPicker: View>: View {
                     ProfileMarkView(
                         colorHex: colorHex,
                         isSelected: hasProfile,
-                        showsBars: hasProfile
+                        showsBars: hasProfile,
+                        isPaused: isPaused
                     )
                 }
                 .buttonStyle(.plain)
@@ -1686,6 +1700,8 @@ private struct OtherProfileRow: View {
     let title: String
     let colorHex: String
     var isEnabled: Bool = true
+    var isSelected: Bool = false
+    var isPaused: Bool = false
     let action: () -> Void
     var onDelete: (() -> Void)? = nil
 
@@ -1694,12 +1710,16 @@ private struct OtherProfileRow: View {
     init(
         profile: ProfileFile,
         colorHex: String,
+        isSelected: Bool = false,
+        isPaused: Bool = false,
         action: @escaping () -> Void,
         onDelete: (() -> Void)? = nil
     ) {
         self.title = profile.displayName
         self.colorHex = colorHex
         self.isEnabled = true
+        self.isSelected = isSelected
+        self.isPaused = isPaused
         self.action = action
         self.onDelete = onDelete
     }
@@ -1726,7 +1746,12 @@ private struct OtherProfileRow: View {
                     .padding(.horizontal, MenuChrome.highlightInset)
 
                 HStack(spacing: 10) {
-                    ProfileMarkView(colorHex: colorHex, isSelected: false)
+                    ProfileMarkView(
+                        colorHex: colorHex,
+                        isSelected: isSelected,
+                        isPaused: isPaused,
+                        showsOnPlate: isSelected
+                    )
                     Text(title)
                         .font(MenuChrome.bodyFont)
                         .fontWeight(.regular)
@@ -1754,6 +1779,7 @@ private struct OtherProfileRow: View {
 
 struct ControlCenterRow: View {
     let title: String
+    var subtitle: String? = nil
     var style: ControlCenterRowStyle = .command
     var leading: ControlCenterLeading = .none
     var trailing: ControlCenterTrailing = .none
@@ -1818,17 +1844,24 @@ struct ControlCenterRow: View {
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .padding(.trailing, 6)
+                }
+
                 switch trailing {
                 case .none:
                     EmptyView()
-                case .chevronRight:
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                case .chevronDown:
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                case .chevronRight, .chevronDown:
+                    // Slot is the wider glyph so a subtitle 6pt away doesn’t shift.
+                    ZStack(alignment: .trailing) {
+                        chevronImage("chevron.down").hidden()
+                        chevronImage("chevron.right").hidden()
+                        chevronImage(trailing == .chevronDown ? "chevron.down" : "chevron.right")
+                    }
                 case .externalLink:
                     ExternalLinkIcon()
                         .foregroundStyle(.tertiary)
@@ -1850,6 +1883,12 @@ struct ControlCenterRow: View {
         }
         .font(titleFont)
         .focusEffectDisabled()
+    }
+
+    private func chevronImage(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: MenuChrome.chevronSize, weight: .semibold))
+            .foregroundStyle(.tertiary)
     }
 }
 

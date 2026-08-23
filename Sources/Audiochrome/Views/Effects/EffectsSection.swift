@@ -36,6 +36,10 @@ struct EffectsSection: View {
         appState.effects(forIdentity: identityKey)
     }
 
+    private var isDeviceEnabled: Bool {
+        appState.config.mapping(forIdentity: identityKey).enabled
+    }
+
     var body: some View {
         if EffectsFeature.isEnabled, !DeviceEffects.listedKinds.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
@@ -55,6 +59,7 @@ struct EffectsSection: View {
                         EffectRow(
                             kind: kind,
                             isOn: effects.isEnabled(kind),
+                            isPaused: effects.isEnabled(kind) && !isDeviceEnabled,
                             presetTitle: presetTitle(for: kind)
                         ) {
                             appState.setEffectEnabled(
@@ -92,6 +97,7 @@ struct EffectsSection: View {
 private struct EffectRow: View {
     let kind: EffectKind
     let isOn: Bool
+    var isPaused: Bool = false
     let presetTitle: String
     let onToggle: () -> Void
     let onEdit: () -> Void
@@ -107,7 +113,7 @@ private struct EffectRow: View {
             HStack(spacing: 0) {
                 Button(action: onToggle) {
                     HStack(spacing: 10) {
-                        EffectMarkView(kind: kind, isOn: isOn)
+                        EffectMarkView(kind: kind, isOn: isOn, isPaused: isPaused)
                         Text(kind.title)
                             .font(MenuChrome.bodyFont)
                             .fontWeight(.regular)
@@ -186,10 +192,12 @@ struct EffectPresetRow: View {
     }
 }
 
-/// Gray plate when off; white plate + dark ink when on.
+/// Gray plate when off; white plate + dark ink when on;
+/// dark gray plate + light ink when on but the device toggle is off.
 struct EffectMarkView: View {
     let kind: EffectKind
     let isOn: Bool
+    var isPaused: Bool = false
     var size: CGFloat = MenuChrome.listIconSize
 
     var body: some View {
@@ -218,6 +226,9 @@ struct EffectMarkView: View {
     }
 
     private var plate: Color {
+        if isOn, isPaused {
+            return MenuChrome.pausedMarkPlate
+        }
         if isOn {
             return Color.white
         }
@@ -225,7 +236,10 @@ struct EffectMarkView: View {
     }
 
     private var ink: Color {
-        Color(nsColor: .labelColor)
+        if isOn, isPaused {
+            return MenuChrome.pausedMarkInk
+        }
+        return Color(nsColor: .labelColor)
     }
 }
 

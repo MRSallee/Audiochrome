@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.6.3** — Home EQ panel restack, 26pt list marks, and Timing Lock that engages without a hole.  
+> **v1.6.4** — Available EQs keeps the active profile, with paused marks when the device toggle is off.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements

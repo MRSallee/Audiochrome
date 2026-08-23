@@ -11,12 +11,6 @@ extension AppState {
         forIdentity identityKey: String
     ) {
         updateEffects(forIdentity: identityKey) { $0.setEnabled(enabled, for: kind) }
-        if enabled {
-            let key = mappingIdentityKey(for: identityKey)
-            if !config.mapping(forIdentity: key).enabled {
-                setEnabled(forIdentity: key, enabled: true)
-            }
-        }
     }
 
     public func updateCrossfeed(
@@ -84,6 +78,21 @@ extension AppState {
         objectWillChange.send()
         if key == activeMappingIdentityKey {
             syncEngine()
+        }
+        reconcileProcessingEnabled(forIdentity: key)
+    }
+
+    /// Device toggle follows whether anything is actually processing.
+    /// Enabling an effect arms it; clearing the last effect with no EQ disarms it.
+    private func reconcileProcessingEnabled(forIdentity identityKey: String) {
+        let key = mappingIdentityKey(for: identityKey)
+        let mapping = config.mapping(forIdentity: key)
+        if mapping.effects.isAudible {
+            if !mapping.enabled {
+                setEnabled(forIdentity: key, enabled: true)
+            }
+        } else if mapping.enabled, mapping.profileFilename == nil {
+            setEnabled(forIdentity: key, enabled: false)
         }
     }
 }
