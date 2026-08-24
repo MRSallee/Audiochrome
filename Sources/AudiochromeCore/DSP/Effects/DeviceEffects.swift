@@ -42,12 +42,7 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
     }
 
     public var enabledDisplayNames: [String] {
-        guard EffectsFeature.isEnabled else { return [] }
-        var names: [String] = []
-        if saturation.enabled { names.append(EffectKind.saturation.title) }
-        if subharmonic.enabled { names.append(EffectKind.subharmonic.title) }
-        if crossfeed.enabled { names.append(EffectKind.crossfeed.title) }
-        return names
+        Self.listedKinds.filter { isEnabled($0) }.map(\.title)
     }
 
     public var signature: String {
@@ -78,9 +73,9 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
 }
 
 public enum EffectKind: String, CaseIterable, Identifiable, Sendable {
+    case crossfeed
     case saturation
     case subharmonic
-    case crossfeed
 
     public var id: String { rawValue }
 

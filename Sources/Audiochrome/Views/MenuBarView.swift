@@ -462,13 +462,16 @@ struct MenuBarView: View {
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
         let otherProfiles = preferredOtherProfilesProgress(for: key)
+        let effects = preferredEffectsProgress(for: key)
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 0
                 activeOtherProfilesProgress = 0
+                activeEffectsProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
                 inactiveOtherProfilesProgress = otherProfiles
+                inactiveEffectsProgress = effects
                 colorPickerIdentityKey = nil
                 if renamingIdentityKey != key {
                     endRenameIfNeeded()
@@ -477,9 +480,11 @@ struct MenuBarView: View {
         } else {
             activePanelProgress = 0
             activeOtherProfilesProgress = 0
+            activeEffectsProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
             inactiveOtherProfilesProgress = otherProfiles
+            inactiveEffectsProgress = effects
             colorPickerIdentityKey = nil
             if renamingIdentityKey != key {
                 endRenameIfNeeded()
@@ -490,12 +495,15 @@ struct MenuBarView: View {
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
         let otherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
+        let effects = activeKey.map { preferredEffectsProgress(for: $0) } ?? 0
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
                 activeOtherProfilesProgress = otherProfiles
+                activeEffectsProgress = effects
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
+                inactiveEffectsProgress = 0
                 colorPickerIdentityKey = nil
                 if let renamingIdentityKey, renamingIdentityKey != activeKey {
                     endRenameIfNeeded()
@@ -509,9 +517,11 @@ struct MenuBarView: View {
         } else {
             activePanelProgress = 1
             activeOtherProfilesProgress = otherProfiles
+            activeEffectsProgress = effects
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
             inactiveOtherProfilesProgress = 0
+            inactiveEffectsProgress = 0
             colorPickerIdentityKey = nil
             if let renamingIdentityKey, renamingIdentityKey != activeKey {
                 endRenameIfNeeded()
@@ -522,6 +532,11 @@ struct MenuBarView: View {
     /// No Profile → Available Profiles starts open so picking an EQ is one less click.
     private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
         appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
+    }
+
+    /// Any effect on → Effects starts open so you can see what's running.
+    private func preferredEffectsProgress(for identityKey: String) -> CGFloat {
+        appState.config.mapping(forIdentity: identityKey).effects.isAudible ? 1 : 0
     }
 
     private func pinOtherDevicesWithProfiles(reset: Bool) {
@@ -983,17 +998,15 @@ private enum OutputEQPanelMetrics {
     /// Cap so a long folder doesn’t shove Change Folder / other outputs / Quit off-screen.
     static let maxVisibleOtherProfileRows = 7
 
-    /// “Active EQ” header + row + optional waveform.
-    static func activeProfileBlockHeight(hasProfile: Bool) -> CGFloat {
-        var height = MenuChrome.sectionTopPadding
+    /// “Active EQ” header + row + waveform (flat when no EQ is on).
+    static func activeProfileBlockHeight(hasProfile: Bool = true) -> CGFloat {
+        _ = hasProfile
+        return MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
             + iconRowHeight
-        if hasProfile {
-            height += MenuChrome.waveformSpacing
-                + MenuChrome.waveformHeight
-                + MenuChrome.waveformSpacing
-        }
-        return height
+            + MenuChrome.waveformSpacing
+            + MenuChrome.waveformHeight
+            + MenuChrome.waveformSpacing
     }
 
     /// Permission slot: Active EQ header + message row + settings pill.
@@ -1218,27 +1231,31 @@ private struct OutputEQPanel: View {
                         }
                     }
 
-                    if hasProfile, let filename = mapping.profileFilename {
-                        ZStack(alignment: .topTrailing) {
-                            ProfileWaveformView(
-                                preview: appState.eqFrequencyResponse(forIdentity: identityKey),
-                                colorHex: appState.colorHex(forProfile: filename, forIdentity: identityKey),
-                                isPaused: !mapping.enabled
-                            )
-                            .frame(height: MenuChrome.waveformHeight)
+                    ZStack(alignment: .topTrailing) {
+                        let eqLive = hasProfile && mapping.enabled
+                        ProfileWaveformView(
+                            preview: eqLive
+                                ? appState.eqFrequencyResponse(forIdentity: identityKey)
+                                : nil,
+                            colorHex: mapping.profileFilename.map {
+                                appState.colorHex(forProfile: $0, forIdentity: identityKey)
+                            } ?? mapping.colorHex,
+                            isPaused: hasProfile && !mapping.enabled,
+                            isNeutral: !eqLive
+                        )
+                        .frame(height: MenuChrome.waveformHeight)
 
-                            if showsCompare {
-                                CompareChip(isOn: appState.isEQComparing) { comparing in
-                                    appState.setEQComparing(comparing)
-                                }
-                                .padding(.top, 8)
-                                .padding(.trailing, 8)
+                        if eqLive, showsCompare {
+                            CompareChip(isOn: appState.isEQComparing) { comparing in
+                                appState.setEQComparing(comparing)
                             }
+                            .padding(.top, 8)
+                            .padding(.trailing, 8)
                         }
-                        .padding(.horizontal, MenuChrome.contentInset)
-                        .padding(.top, MenuChrome.waveformSpacing)
-                        .padding(.bottom, MenuChrome.waveformSpacing)
                     }
+                    .padding(.horizontal, MenuChrome.contentInset)
+                    .padding(.top, MenuChrome.waveformSpacing)
+                    .padding(.bottom, MenuChrome.waveformSpacing)
                 }
                 .frame(height: blockHeight, alignment: .top)
             }
@@ -1438,10 +1455,13 @@ struct ProfileWaveformView: View {
     let colorHex: String
     /// Home panel only — device toggle off. Editor stays in profile color.
     var isPaused: Bool = false
+    /// Home: no profile or EQ off. Same paint as a live curve, in grayscale.
+    var isNeutral: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     private var color: Color {
-        isPaused ? MenuChrome.pausedMarkPlate : colorHex.profileColor(.curve, scheme: colorScheme)
+        if isNeutral { return MenuChrome.pausedMarkPlate }
+        return isPaused ? MenuChrome.pausedMarkPlate : colorHex.profileColor(.curve, scheme: colorScheme)
     }
 
     private static let verticalInset: CGFloat = 2
@@ -1469,36 +1489,15 @@ struct ProfileWaveformView: View {
                 lineJoin: .round
             )
 
-            guard let preview, preview.magnitudesDB.count >= 2 else {
-                Self.strokeGrid(&context, plot: plot, color: color)
+            let path: Path
+            if let preview, preview.magnitudesDB.count >= 2 {
+                path = Self.curvePath(magnitudesDB: preview.magnitudesDB, plot: plot)
+            } else {
                 var flat = Path()
                 let y = plot.midY
                 flat.move(to: CGPoint(x: plot.minX, y: y))
                 flat.addLine(to: CGPoint(x: plot.maxX, y: y))
-                context.stroke(flat, with: .color(Color.primary.opacity(0.35)), style: style)
-                return
-            }
-
-            let magnitudesDB = preview.magnitudesDB
-            let half = Self.halfRangeDB
-            let minDB = magnitudesDB.min() ?? 0
-            let maxDB = magnitudesDB.max() ?? 0
-            let center = (minDB + maxDB) / 2
-            let lo = center - half
-            let hi = center + half
-            let span = max(hi - lo, 1)
-
-            var path = Path()
-            let last = magnitudesDB.count - 1
-            for (i, db) in magnitudesDB.enumerated() {
-                let x = plot.minX + plot.width * CGFloat(i) / CGFloat(last)
-                let t = min(1, max(0, (db - lo) / span))
-                let y = plot.minY + plot.height * (1 - CGFloat(t))
-                if i == 0 {
-                    path.move(to: CGPoint(x: x, y: y))
-                } else {
-                    path.addLine(to: CGPoint(x: x, y: y))
-                }
+                path = flat
             }
 
             var fill = path
@@ -1519,7 +1518,6 @@ struct ProfileWaveformView: View {
 
             Self.strokeGrid(&context, plot: plot, color: color)
 
-            // Profile color with a 20% black overlay.
             context.stroke(path, with: .color(color), style: style)
             context.stroke(path, with: .color(Color.black.opacity(Self.curveBlackOverlayOpacity)), style: style)
         }
@@ -1531,6 +1529,30 @@ struct ProfileWaveformView: View {
         // Glass re-blends translucent pixels live; bake so the fade + line stay as authored.
         .drawingGroup()
         .accessibilityLabel("EQ frequency response")
+    }
+
+    private static func curvePath(magnitudesDB: [Double], plot: CGRect) -> Path {
+        let half = halfRangeDB
+        let minDB = magnitudesDB.min() ?? 0
+        let maxDB = magnitudesDB.max() ?? 0
+        let center = (minDB + maxDB) / 2
+        let lo = center - half
+        let hi = center + half
+        let span = max(hi - lo, 1)
+
+        var path = Path()
+        let last = magnitudesDB.count - 1
+        for (i, db) in magnitudesDB.enumerated() {
+            let x = plot.minX + plot.width * CGFloat(i) / CGFloat(last)
+            let t = min(1, max(0, (db - lo) / span))
+            let y = plot.minY + plot.height * (1 - CGFloat(t))
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        return path
     }
 
     /// Vertical log-frequency ticks: 1…9 × 10ⁿ Hz, matching a 20 Hz–20 kHz audio chart.

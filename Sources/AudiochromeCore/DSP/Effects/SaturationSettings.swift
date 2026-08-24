@@ -269,7 +269,6 @@ public struct SaturationSettings: Codable, Equatable, Sendable {
 }
 
 public enum SaturationPreset: String, CaseIterable, Codable, Identifiable, Sendable {
-    case subtle
     case tube
     case tape
     case edge
@@ -283,7 +282,6 @@ public enum SaturationPreset: String, CaseIterable, Codable, Identifiable, Senda
 
     public var title: String {
         switch self {
-        case .subtle: return "Subtle"
         case .tube: return "Tube"
         case .tape: return "Tape"
         case .edge: return "Edge"
@@ -293,8 +291,6 @@ public enum SaturationPreset: String, CaseIterable, Codable, Identifiable, Senda
 
     public var tune: SaturationTune {
         switch self {
-        case .subtle:
-            return SaturationTune(even: .five, odd: .low, bandwidth: .bass, memory: .off)
         case .tube:
             return SaturationTune(even: .ten, odd: .low, bandwidth: .bass, memory: .off)
         case .tape:
@@ -304,5 +300,23 @@ public enum SaturationPreset: String, CaseIterable, Codable, Identifiable, Senda
         case .custom:
             return .middle
         }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "tube": self = .tube
+        case "tape": self = .tape
+        case "edge": self = .edge
+        case "custom": self = .custom
+        case "subtle": self = .tube
+        default: self = .tube
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }

@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.6.4** — Available EQs keeps the active profile, with paused marks when the device toggle is off.  
+> **v1.6.5** — A flat Active EQ plot when nothing is on, and Effects that opens when something is enabled.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
