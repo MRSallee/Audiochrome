@@ -461,7 +461,6 @@ struct MenuBarView: View {
 
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
-        let otherProfiles = preferredOtherProfilesProgress(for: key)
         let effects = preferredEffectsProgress(for: key)
         if animated {
             popoverChrome.animatingDisclosure {
@@ -470,7 +469,7 @@ struct MenuBarView: View {
                 activeEffectsProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
-                inactiveOtherProfilesProgress = otherProfiles
+                inactiveOtherProfilesProgress = 0
                 inactiveEffectsProgress = effects
                 colorPickerIdentityKey = nil
                 if renamingIdentityKey != key {
@@ -483,7 +482,7 @@ struct MenuBarView: View {
             activeEffectsProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
-            inactiveOtherProfilesProgress = otherProfiles
+            inactiveOtherProfilesProgress = 0
             inactiveEffectsProgress = effects
             colorPickerIdentityKey = nil
             if renamingIdentityKey != key {
@@ -494,12 +493,11 @@ struct MenuBarView: View {
 
     private func focusActiveOutput(animated: Bool) {
         let activeKey = activeDevice?.identityKey
-        let otherProfiles = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 0
         let effects = activeKey.map { preferredEffectsProgress(for: $0) } ?? 0
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
-                activeOtherProfilesProgress = otherProfiles
+                activeOtherProfilesProgress = 0
                 activeEffectsProgress = effects
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
@@ -516,7 +514,7 @@ struct MenuBarView: View {
             }
         } else {
             activePanelProgress = 1
-            activeOtherProfilesProgress = otherProfiles
+            activeOtherProfilesProgress = 0
             activeEffectsProgress = effects
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
@@ -527,11 +525,6 @@ struct MenuBarView: View {
                 endRenameIfNeeded()
             }
         }
-    }
-
-    /// No Profile → Available Profiles starts open so picking an EQ is one less click.
-    private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
-        appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
     /// Any effect on → Effects starts open so you can see what's running.
@@ -1065,9 +1058,10 @@ private enum OutputEQPanelMetrics {
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
-        height += disclosureRowHeight // EQs header
-        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: profiles.count)
         height += iconRowHeight // Create New EQ
+        height += MenuChrome.otherProfilesSectionVerticalPadding
+        height += disclosureRowHeight // Available EQs header
+        height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: profiles.count)
         if EffectsFeature.isEnabled, DeviceEffects.listedKinds.count > 0 {
             height += MenuChrome.otherProfilesSectionVerticalPadding
             height += 1 // divider before Effects
@@ -1133,12 +1127,13 @@ private struct OutputEQPanel: View {
 
             activeProfileSection
 
-            otherProfilesSection
+            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
                 .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
+                .padding(.bottom, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
 
-            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
+            otherProfilesSection
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
 
@@ -1153,19 +1148,8 @@ private struct OutputEQPanel: View {
             }
         }
         .onAppear {
-            if !hasProfile {
-                otherProfilesProgress = 1
-            }
             if mapping.effects.isAudible {
                 effectsProgress = 1
-            }
-        }
-        .onChange(of: mapping.profileFilename) { _, filename in
-            if filename == nil {
-                guard otherProfilesProgress < 0.5 else { return }
-                popoverChrome.animatingDisclosure {
-                    otherProfilesProgress = 1
-                }
             }
         }
         .onChange(of: mapping.effects) { _, effects in
@@ -1226,7 +1210,6 @@ private struct OutputEQPanel: View {
                     ) {
                         guard hasProfile else { return }
                         popoverChrome.animatingDisclosure {
-                            otherProfilesProgress = 1
                             appState.setProfile(forIdentity: identityKey, filename: nil)
                         }
                     }
