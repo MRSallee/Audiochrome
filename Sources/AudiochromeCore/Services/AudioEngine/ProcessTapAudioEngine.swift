@@ -449,6 +449,12 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
                     right: right,
                     frames: min(leftFrames, rightFrames)
                 )
+            } else if outBuffers.count == 1,
+                      let mono = outBuffers[0].mData?.assumingMemoryBound(to: Float.self) {
+                engine.effectsProcessor.processMono(
+                    mono,
+                    frames: Int(outBuffers[0].mDataByteSize / UInt32(MemoryLayout<Float>.size))
+                )
             }
         } else {
             for outBuffer in outBuffers {

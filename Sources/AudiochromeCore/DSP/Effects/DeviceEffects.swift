@@ -3,29 +3,34 @@ import Foundation
 /// Per-output effect slots. Lives on `OutputMapping`, not on an EQ profile —
 /// swap profiles and these stay; swap devices and you get that device’s state.
 public struct DeviceEffects: Codable, Equatable, Sendable {
+    public var saturation: SaturationSettings
     public var crossfeed: CrossfeedSettings
     public var subharmonic: SubharmonicSettings
 
     public init(
+        saturation: SaturationSettings = .off,
         crossfeed: CrossfeedSettings = .off,
         subharmonic: SubharmonicSettings = .off
     ) {
+        self.saturation = saturation
         self.crossfeed = crossfeed
         self.subharmonic = subharmonic
     }
 
     private enum CodingKeys: String, CodingKey {
-        case crossfeed, subharmonic
+        case saturation, crossfeed, subharmonic
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        saturation = try container.decodeIfPresent(SaturationSettings.self, forKey: .saturation) ?? .off
         crossfeed = try container.decodeIfPresent(CrossfeedSettings.self, forKey: .crossfeed) ?? .off
         subharmonic = try container.decodeIfPresent(SubharmonicSettings.self, forKey: .subharmonic) ?? .off
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(saturation, forKey: .saturation)
         try container.encode(crossfeed, forKey: .crossfeed)
         try container.encode(subharmonic, forKey: .subharmonic)
     }
@@ -33,33 +38,36 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
     public static let off = DeviceEffects()
 
     public var isAudible: Bool {
-        EffectsFeature.isEnabled && (crossfeed.enabled || subharmonic.enabled)
+        EffectsFeature.isEnabled && (saturation.enabled || crossfeed.enabled || subharmonic.enabled)
     }
 
     public var enabledDisplayNames: [String] {
         guard EffectsFeature.isEnabled else { return [] }
         var names: [String] = []
-        if crossfeed.enabled { names.append(EffectKind.crossfeed.title) }
+        if saturation.enabled { names.append(EffectKind.saturation.title) }
         if subharmonic.enabled { names.append(EffectKind.subharmonic.title) }
+        if crossfeed.enabled { names.append(EffectKind.crossfeed.title) }
         return names
     }
 
     public var signature: String {
         guard EffectsFeature.isEnabled else { return "off" }
-        return "xf:\(crossfeed.signature)|sh:\(subharmonic.signature)"
+        return "sat:\(saturation.signature)|sh:\(subharmonic.signature)|xf:\(crossfeed.signature)"
     }
 
     public func isEnabled(_ kind: EffectKind) -> Bool {
         switch kind {
-        case .crossfeed: return crossfeed.enabled
+        case .saturation: return saturation.enabled
         case .subharmonic: return subharmonic.enabled
+        case .crossfeed: return crossfeed.enabled
         }
     }
 
     public mutating func setEnabled(_ enabled: Bool, for kind: EffectKind) {
         switch kind {
-        case .crossfeed: crossfeed.enabled = enabled
+        case .saturation: saturation.enabled = enabled
         case .subharmonic: subharmonic.enabled = enabled
+        case .crossfeed: crossfeed.enabled = enabled
         }
     }
 
@@ -70,15 +78,17 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
 }
 
 public enum EffectKind: String, CaseIterable, Identifiable, Sendable {
-    case crossfeed
+    case saturation
     case subharmonic
+    case crossfeed
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .crossfeed: return "Crossfeed"
+        case .saturation: return "Saturation"
         case .subharmonic: return "Subharmonics"
+        case .crossfeed: return "Crossfeed"
         }
     }
 }

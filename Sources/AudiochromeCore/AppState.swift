@@ -21,6 +21,8 @@ public final class AppState: ObservableObject {
     @Published public internal(set) var effectsEditorBaseline: DeviceEffects?
     /// A/B compare in the EQ editor: dry (level-matched) vs current EQ.
     @Published public private(set) var isEQComparing = false
+    /// A/B compare in the Saturation editor: effect off vs current tune.
+    @Published public private(set) var isSaturationComparing = false
     /// A/B compare in the Crossfeed editor: effect off vs current tune.
     @Published public private(set) var isCrossfeedComparing = false
     /// A/B compare in the Subharmonic editor: effect off vs current tune.
@@ -789,6 +791,14 @@ public final class AppState: ObservableObject {
         syncEngine()
     }
 
+    public func setSaturationComparing(_ comparing: Bool) {
+        guard isSaturationComparing != comparing else { return }
+        isSaturationComparing = comparing
+        lastSyncedProfile = nil
+        objectWillChange.send()
+        syncEngine()
+    }
+
     public func setCrossfeedComparing(_ comparing: Bool) {
         guard isCrossfeedComparing != comparing else { return }
         isCrossfeedComparing = comparing
@@ -805,9 +815,10 @@ public final class AppState: ObservableObject {
         syncEngine()
     }
 
-    /// Clears Crossfeed / Subharmonic A/B. EQ compare is independent.
+    /// Clears effect A/B. EQ compare is independent.
     public func clearEffectComparing() {
-        let wasComparing = isCrossfeedComparing || isSubharmonicComparing
+        let wasComparing = isSaturationComparing || isCrossfeedComparing || isSubharmonicComparing
+        isSaturationComparing = false
         isCrossfeedComparing = false
         isSubharmonicComparing = false
         guard wasComparing else { return }
@@ -1265,6 +1276,9 @@ public final class AppState: ObservableObject {
             mappingIdentityKey(for: draft.identityKey) == mappingKey ? draft : nil
         }
         var effects = mapping.effects
+        if isSaturationComparing {
+            effects.saturation.enabled = false
+        }
         if isCrossfeedComparing {
             effects.crossfeed.enabled = false
         }
@@ -1323,6 +1337,7 @@ public final class AppState: ObservableObject {
         }
 
         var effectsToken = effects.signature
+        if isSaturationComparing { effectsToken += ":satcmp" }
         if isCrossfeedComparing { effectsToken += ":xfcmp" }
         if isSubharmonicComparing { effectsToken += ":shcmp" }
         let syncToken: String

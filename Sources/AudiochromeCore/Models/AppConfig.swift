@@ -6,7 +6,7 @@ public struct OutputMapping: Codable, Equatable, Sendable {
     public var colorHex: String
     /// Absolute path to this output’s EQ profile folder. `nil` = `~/Documents/Audiochrome/EQ profiles`.
     public var profilesDirectoryPath: String?
-    /// Device-scoped toys (crossfeed, later convolution). Missing key → off.
+    /// Device-scoped toys (saturation, subharmonics, crossfeed). Missing key → off.
     public var effects: DeviceEffects
 
     private enum CodingKeys: String, CodingKey {

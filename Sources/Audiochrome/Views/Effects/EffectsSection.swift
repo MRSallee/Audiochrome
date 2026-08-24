@@ -88,8 +88,9 @@ struct EffectsSection: View {
 
     private func presetTitle(for kind: EffectKind) -> String {
         switch kind {
-        case .crossfeed: return effects.crossfeed.selectedPreset.title
+        case .saturation: return effects.saturation.selectedPreset.title
         case .subharmonic: return effects.subharmonic.selectedPreset.title
+        case .crossfeed: return effects.crossfeed.selectedPreset.title
         }
     }
 }
@@ -156,7 +157,7 @@ private struct EffectRow: View {
     }
 }
 
-/// EQ-profile-style row used by Crossfeed and Subharmonic preset lists.
+/// EQ-profile-style row used by effect preset lists.
 struct EffectPresetRow: View {
     let kind: EffectKind
     let title: String
@@ -216,11 +217,14 @@ struct EffectMarkView: View {
     @ViewBuilder
     private var glyph: some View {
         switch kind {
-        case .crossfeed:
-            TransferShape()
+        case .saturation:
+            SaturationCurveShape()
                 .stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
         case .subharmonic:
             ArrowWaveLeftDownShape()
+                .stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
+        case .crossfeed:
+            TransferShape()
                 .stroke(style: StrokeStyle(lineWidth: 1.15, lineCap: .round, lineJoin: .round))
         }
     }
@@ -240,6 +244,23 @@ struct EffectMarkView: View {
             return MenuChrome.pausedMarkInk
         }
         return Color(nsColor: .labelColor)
+    }
+}
+
+/// Soft S-curve (transfer function) in a 24×24 box.
+struct SaturationCurveShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let sx = rect.width / 24
+        let sy = rect.height / 24
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
+        }
+
+        var path = Path()
+        path.move(to: pt(4, 18))
+        path.addCurve(to: pt(12, 12), control1: pt(8, 18), control2: pt(8, 12))
+        path.addCurve(to: pt(20, 6), control1: pt(16, 12), control2: pt(16, 6))
+        return path
     }
 }
 

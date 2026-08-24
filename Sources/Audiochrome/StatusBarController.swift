@@ -1194,6 +1194,8 @@ private struct MenuBarRoot: View {
             ProfileEditorView(appState: appState)
         case .effectsEditor:
             switch appState.effectsEditorKind ?? lingeringEffectsKind {
+            case .saturation:
+                SaturationEditorView(appState: appState)
             case .subharmonic:
                 SubharmonicEditorView(appState: appState)
             case .crossfeed, .none:

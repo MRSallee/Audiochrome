@@ -13,6 +13,16 @@ extension AppState {
         updateEffects(forIdentity: identityKey) { $0.setEnabled(enabled, for: kind) }
     }
 
+    public func updateSaturation(
+        forIdentity identityKey: String,
+        _ mutate: (inout SaturationSettings) -> Void
+    ) {
+        updateEffects(forIdentity: identityKey) { effects in
+            mutate(&effects.saturation)
+            effects.saturation.sanitize()
+        }
+    }
+
     public func updateCrossfeed(
         forIdentity identityKey: String,
         _ mutate: (inout CrossfeedSettings) -> Void
@@ -58,7 +68,7 @@ extension AppState {
         effectsEditorIdentityKey = nil
         effectsEditorKind = nil
         effectsEditorBaseline = nil
-        if isCrossfeedComparing || isSubharmonicComparing {
+        if isSaturationComparing || isCrossfeedComparing || isSubharmonicComparing {
             clearEffectComparing()
         } else {
             objectWillChange.send()
