@@ -7,49 +7,55 @@ struct ScrollViewport<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     @Environment(\.colorScheme) private var colorScheme
-    @State private var showTop = false
-    @State private var showBottom = false
+    @State private var topOverflow: CGFloat = 0
+    @State private var bottomOverflow: CGFloat = 0
 
     var body: some View {
         ScrollView(.vertical, showsIndicators: showsIndicators) {
             content()
                 .background {
                     ScrollEdgeMonitor { top, bottom in
-                        showTop = top
-                        showBottom = bottom
+                        topOverflow = top
+                        bottomOverflow = bottom
                     }
                 }
         }
         .overlay(alignment: .top) {
             edgeShadow(top: true)
-                .opacity(showTop ? 1 : 0)
+                .opacity(edgeOpacity(topOverflow))
         }
         .overlay(alignment: .bottom) {
             edgeShadow(top: false)
-                .opacity(showBottom ? 1 : 0)
+                .opacity(edgeOpacity(bottomOverflow))
         }
         .clipped()
-        .animation(.easeInOut(duration: 0.18), value: showTop)
-        .animation(.easeInOut(duration: 0.18), value: showBottom)
     }
 
+    private func edgeOpacity(_ overflow: CGFloat) -> CGFloat {
+        min(1, max(0, overflow / 16))
+    }
+
+    /// Soft dome: ~10pt of density in the center, fading to 0 at the sides and inward.
     private func edgeShadow(top: Bool) -> some View {
-        let strong = Color.black.opacity(colorScheme == .dark ? 0.45 : 0.18)
-        let mid = Color.black.opacity(colorScheme == .dark ? 0.18 : 0.07)
-        return LinearGradient(
-            colors: top
-                ? [strong, mid, .clear]
-                : [.clear, mid, strong],
-            startPoint: .top,
-            endPoint: .bottom
+        let strong = Color.black.opacity(colorScheme == .dark ? 0.135 : 0.054)
+        let mid = Color.black.opacity(colorScheme == .dark ? 0.05 : 0.02)
+        return EllipticalGradient(
+            stops: [
+                .init(color: strong, location: 0),
+                .init(color: mid, location: 0.28),
+                .init(color: .clear, location: 1)
+            ],
+            center: UnitPoint(x: 0.5, y: top ? 0 : 1),
+            startRadiusFraction: 0,
+            endRadiusFraction: 1
         )
-        .frame(height: 22)
+        .frame(height: 20)
         .allowsHitTesting(false)
     }
 }
 
 private struct ScrollEdgeMonitor: NSViewRepresentable {
-    var onChange: (Bool, Bool) -> Void
+    var onChange: (CGFloat, CGFloat) -> Void
 
     func makeNSView(context: Context) -> ScrollEdgeMonitorView {
         let view = ScrollEdgeMonitorView()
@@ -64,10 +70,10 @@ private struct ScrollEdgeMonitor: NSViewRepresentable {
 }
 
 private final class ScrollEdgeMonitorView: NSView {
-    var onChange: ((Bool, Bool) -> Void)?
+    var onChange: ((CGFloat, CGFloat) -> Void)?
     private var observations: [NSObjectProtocol] = []
-    private var lastTop = false
-    private var lastBottom = false
+    private var lastTop: CGFloat = -1
+    private var lastBottom: CGFloat = -1
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -125,14 +131,14 @@ private final class ScrollEdgeMonitorView: NSView {
 
     func report() {
         guard let scroll = enclosingScrollView else {
-            publish(top: false, bottom: false)
+            publish(top: 0, bottom: 0)
             return
         }
         let clip = scroll.contentView.bounds
         let documentHeight = scroll.documentView?.frame.height ?? 0
         let viewHeight = clip.height
         guard viewHeight > 0, documentHeight > 0 else {
-            publish(top: false, bottom: false)
+            publish(top: 0, bottom: 0)
             return
         }
         let offsetFromTop: CGFloat
@@ -142,11 +148,11 @@ private final class ScrollEdgeMonitorView: NSView {
             offsetFromTop = documentHeight - viewHeight - clip.origin.y
         }
         let remaining = documentHeight - viewHeight - offsetFromTop
-        publish(top: offsetFromTop > 1.5, bottom: remaining > 1.5)
+        publish(top: max(0, offsetFromTop), bottom: max(0, remaining))
     }
 
-    private func publish(top: Bool, bottom: Bool) {
-        guard top != lastTop || bottom != lastBottom else { return }
+    private func publish(top: CGFloat, bottom: CGFloat) {
+        guard abs(top - lastTop) > 0.25 || abs(bottom - lastBottom) > 0.25 else { return }
         lastTop = top
         lastBottom = bottom
         onChange?(top, bottom)

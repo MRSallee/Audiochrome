@@ -98,6 +98,10 @@ struct MenuBarView: View {
                 )
             }
 
+            if !otherDevices.isEmpty, !isActivePanelVisible {
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
+            }
+
             Group {
                 ForEach(otherDevices, id: \.identityKey) { device in
                     otherDeviceSection(device)
@@ -383,9 +387,25 @@ struct MenuBarView: View {
                 style: .disclosure,
                 trailing: otherDevicesListProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
-                let target: CGFloat = otherDevicesListProgress < 0.5 ? 1 : 0
+                let opening = otherDevicesListProgress < 0.5
                 popoverChrome.animatingDisclosure {
-                    otherDevicesListProgress = target
+                    otherDevicesListProgress = opening ? 1 : 0
+                    if opening {
+                        activePanelProgress = 0
+                        activeOtherProfilesProgress = 0
+                        activeEffectsProgress = 0
+                        otherDevicePanelProgress = 0
+                        inactiveOtherProfilesProgress = 0
+                        inactiveEffectsProgress = 0
+                        colorPickerIdentityKey = nil
+                    }
+                }
+                if opening {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
+                        if otherDevicePanelProgress < 0.01 {
+                            expandedOtherDeviceKey = nil
+                        }
+                    }
                 }
             }
 
@@ -462,6 +482,7 @@ struct MenuBarView: View {
         let effects = preferredEffectsProgress(for: key)
         if animated {
             popoverChrome.animatingDisclosure {
+                otherDevicesListProgress = 0
                 activePanelProgress = 0
                 activeOtherProfilesProgress = 0
                 activeEffectsProgress = 0
@@ -475,6 +496,7 @@ struct MenuBarView: View {
                 }
             }
         } else {
+            otherDevicesListProgress = 0
             activePanelProgress = 0
             activeOtherProfilesProgress = 0
             activeEffectsProgress = 0
@@ -494,6 +516,7 @@ struct MenuBarView: View {
         let effects = activeKey.map { preferredEffectsProgress(for: $0) } ?? 0
         if animated {
             popoverChrome.animatingDisclosure {
+                otherDevicesListProgress = 0
                 activePanelProgress = 1
                 activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
                 activeEffectsProgress = effects
@@ -511,6 +534,7 @@ struct MenuBarView: View {
                 }
             }
         } else {
+            otherDevicesListProgress = 0
             activePanelProgress = 1
             activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
             activeEffectsProgress = effects

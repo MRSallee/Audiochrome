@@ -2,7 +2,7 @@
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
 
-> **v1.6.7** — Idle menu-bar mark is white bars in a ring; the home list keeps only EQ-enabled devices; Tab moves between EQ text fields.  
+> **v1.6.8** — EQ editor groups filters by Both / Left / Right channel; Available EQs and Effects open when nothing is selected; Other Devices and an open device stay exclusive.  
 > Grant **System Audio Recording** access when prompted.
 
 ## Requirements
