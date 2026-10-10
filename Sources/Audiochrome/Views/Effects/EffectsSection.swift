@@ -118,7 +118,7 @@ private struct EffectRow: View {
                         Text(kind.title)
                             .font(MenuChrome.bodyFont)
                             .fontWeight(.regular)
-                            .foregroundStyle(isOn ? .primary : .secondary)
+                            .foregroundStyle(.primary)
                             .lineLimit(1)
                         Spacer(minLength: 8)
                     }

@@ -570,16 +570,12 @@ public final class AppState: ObservableObject {
         forceEngineResync()
     }
 
-    /// Inactive outputs stay listed when they have a profile, enabled effects, or a
-    /// custom profiles folder (so Change Folder doesn’t yank the row if the selection is cleared).
+    /// Inactive outputs stay in the main list only while EQ is enabled.
+    /// Everything else is reached via Other Devices.
     public func shouldListInactiveOutput(_ identityKey: String) -> Bool {
         guard config.customEQPerDevice else { return false }
         guard identityKey != AppConfig.allAudioIdentityKey else { return false }
-        let mapping = config.mapping(forIdentity: identityKey)
-        if mapping.profileFilename != nil { return true }
-        if mapping.effects.isAudible { return true }
-        let path = mapping.profilesDirectoryPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return !path.isEmpty
+        return config.mapping(forIdentity: identityKey).enabled
     }
 
     /// Lets the user pick which folder supplies EQ profiles for this output.

@@ -92,11 +92,12 @@ struct ProfileEditorView: View {
                 .padding(.top, MenuChrome.waveformSpacing)
                 .padding(.bottom, MenuChrome.waveformSpacing)
 
-            ControlCenterRow(title: "EQ on Squiglink", style: .command, trailing: .externalLink) {
+            ControlCenterRow(title: "EQ on Squiglink", style: .command, leading: .externalLink) {
                 NSWorkspace.shared.open(SquiglinkURL.editorURL(filters: draft.bands.map(\.filter)))
             }
             .padding(.bottom, MenuChrome.menuPadding)
         }
+        .background { EditorTextFieldTabMonitor() }
     }
 
     private func canCompare(_ draft: ProfileEditorDraft) -> Bool {
@@ -648,6 +649,7 @@ private struct AutoChip: View {
         }
         .buttonStyle(.plain)
         .focusEffectDisabled()
+        .focusable(false)
         .frame(width: MenuChrome.switchWidth, height: ValuePill.height)
         .accessibilityLabel("Auto pregain")
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
@@ -780,6 +782,20 @@ private struct EditorNameField: NSViewRepresentable {
             textView: NSTextView,
             doCommandBy commandSelector: Selector
         ) -> Bool {
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                acceptsEndEditing = true
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: false)
+                }
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                acceptsEndEditing = true
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: true)
+                }
+                return true
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:))
                 || commandSelector == #selector(NSResponder.cancelOperation(_:)) {
                 acceptsEndEditing = true
@@ -843,62 +859,155 @@ private final class EditorNameNSTextField: NSTextField {
     }
 }
 
-/// Plain, click-to-edit pregain. Editing while Auto is on turns Auto off (via AppState).
-private struct PregainValueField: View {
+/// Always-present pregain field so Tab can land here. Auto turns off via the binding.
+private struct PregainValueField: NSViewRepresentable {
     @Binding var value: Double
     var range: ClosedRange<Double>
     var format: (Double) -> String
     var snap: (Double) -> Double
 
-    @FocusState private var isFocused: Bool
-    @State private var text = ""
+    func makeCoordinator() -> Coordinator {
+        Coordinator(value: $value, range: range, format: format, snap: snap)
+    }
 
-    var body: some View {
-        Group {
-            if isFocused {
-                TextField("", text: $text)
-                    .textFieldStyle(.plain)
-                    .font(CollapsedColumns.font)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
-                    .focused($isFocused)
-            } else {
-                Text(format(value))
-                    .font(CollapsedColumns.font)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .contentShape(Rectangle())
-                    .onTapGesture { isFocused = true }
-            }
-        }
-        .onAppear { text = format(value) }
-        .onChange(of: value) { _, newValue in
-            if !isFocused { text = format(newValue) }
-        }
-        .onChange(of: isFocused) { _, focused in
-            if focused {
-                text = format(value)
-            } else {
-                commit()
-            }
-        }
-        .onSubmit { isFocused = false }
-        .onReceive(NotificationCenter.default.publisher(for: .audiochromeDidEndTextEditing)) { _ in
-            isFocused = false
+    func makeNSView(context: Context) -> PregainNSTextField {
+        let field = PregainNSTextField()
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.alignment = .right
+        field.font = CollapsedColumns.nsFont
+        field.textColor = .secondaryLabelColor
+        field.stringValue = format(value)
+        field.delegate = context.coordinator
+        field.isEditable = true
+        field.isSelectable = true
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.field = field
+        return field
+    }
+
+    func updateNSView(_ field: PregainNSTextField, context: Context) {
+        context.coordinator.value = $value
+        context.coordinator.range = range
+        context.coordinator.format = format
+        context.coordinator.snap = snap
+        if field.currentEditor() == nil, field.stringValue != format(value) {
+            field.stringValue = format(value)
         }
     }
 
-    private func commit() {
-        let cleaned = text
-            .replacingOccurrences(of: "dB", with: "", options: .caseInsensitive)
-            .replacingOccurrences(of: ",", with: "")
-            .replacingOccurrences(of: " ", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let parsed = Double(cleaned) {
-            value = snap(parsed)
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var value: Binding<Double>
+        var range: ClosedRange<Double>
+        var format: (Double) -> String
+        var snap: (Double) -> Double
+        weak var field: PregainNSTextField?
+
+        init(
+            value: Binding<Double>,
+            range: ClosedRange<Double>,
+            format: @escaping (Double) -> String,
+            snap: @escaping (Double) -> Double
+        ) {
+            self.value = value
+            self.range = range
+            self.format = format
+            self.snap = snap
         }
-        text = format(value)
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            commit()
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                commit()
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: false)
+                }
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                commit()
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: true)
+                }
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                commit()
+                control.window?.makeFirstResponder(nil)
+                return true
+            }
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                field?.stringValue = format(value.wrappedValue)
+                control.window?.makeFirstResponder(nil)
+                return true
+            }
+            return false
+        }
+
+        private func commit() {
+            guard let field else { return }
+            let cleaned = field.stringValue
+                .replacingOccurrences(of: "dB", with: "", options: .caseInsensitive)
+                .replacingOccurrences(of: ",", with: "")
+                .replacingOccurrences(of: " ", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let parsed = Double(cleaned) {
+                value.wrappedValue = snap(parsed)
+            }
+            field.stringValue = format(value.wrappedValue)
+        }
+    }
+}
+
+private final class PregainNSTextField: NSTextField {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        let cell = VerticallyCenteredTextFieldCell(textCell: "")
+        cell.isBordered = false
+        cell.drawsBackground = false
+        cell.isEditable = true
+        cell.isSelectable = true
+        cell.alignment = .right
+        cell.usesSingleLineMode = true
+        cell.wraps = false
+        cell.isScrollable = true
+        cell.focusRingType = .none
+        self.cell = cell
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: MenuChrome.textRowContentHeight)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { selectAllText() }
+        return ok
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        selectAllText()
+    }
+
+    private func selectAllText() {
+        guard let editor = currentEditor() else { return }
+        editor.selectedRange = NSRange(location: 0, length: (editor.string as NSString).length)
     }
 }
 
@@ -923,6 +1032,7 @@ private struct FilterSlider: NSViewRepresentable {
         slider.doubleValue = value
         slider.isContinuous = true
         slider.trackFillColor = .clear
+        slider.refusesFirstResponder = true
         slider.target = context.coordinator
         slider.action = #selector(Coordinator.changed(_:))
         return slider
@@ -952,11 +1062,119 @@ private struct FilterSlider: NSViewRepresentable {
 
 /// Forwards wheel events so the native slider doesn’t steal list scrolling.
 private final class FilterNSSlider: NSSlider {
+    override var acceptsFirstResponder: Bool { false }
+
     override func scrollWheel(with event: NSEvent) {
         if let scrollView = enclosingScrollView {
             scrollView.scrollWheel(with: event)
         } else {
             nextResponder?.scrollWheel(with: event)
+        }
+    }
+}
+
+/// Tab / Shift-Tab stay on editable fields (name, pregain, Q / Hz / dB). Sliders are skipped.
+enum EditorTextFieldTabOrder {
+    @discardableResult
+    static func focusNext(in window: NSWindow, reverse: Bool) -> Bool {
+        let fields = fields(in: window)
+        guard !fields.isEmpty else { return false }
+        let next: NSTextField
+        if let current = currentField(in: window),
+           let index = fields.firstIndex(where: { $0 === current }) {
+            let nextIndex = reverse
+                ? (index == 0 ? fields.count - 1 : index - 1)
+                : (index + 1) % fields.count
+            next = fields[nextIndex]
+        } else {
+            next = reverse ? fields[fields.count - 1] : fields[0]
+        }
+        return window.makeFirstResponder(next)
+    }
+
+    static func fields(in window: NSWindow) -> [NSTextField] {
+        var found: [NSTextField] = []
+        collect(from: window.contentView, into: &found)
+        return found.sorted { a, b in
+            let ra = a.convert(a.bounds, to: nil)
+            let rb = b.convert(b.bounds, to: nil)
+            if abs(ra.midY - rb.midY) > 8 {
+                return ra.midY > rb.midY
+            }
+            return ra.minX < rb.minX
+        }
+    }
+
+    static func currentField(in window: NSWindow) -> NSTextField? {
+        if let field = window.firstResponder as? NSTextField, field.isEditable {
+            return field
+        }
+        if let text = window.firstResponder as? NSTextView,
+           let field = text.delegate as? NSTextField,
+           field.isEditable {
+            return field
+        }
+        var view = (window.firstResponder as? NSView)?.superview
+        while let current = view {
+            if let field = current as? NSTextField, field.isEditable { return field }
+            view = current.superview
+        }
+        return nil
+    }
+
+    private static func collect(from view: NSView?, into fields: inout [NSTextField]) {
+        guard let view, !view.isHidden else { return }
+        if let field = view as? NSTextField, field.isEditable, field.isEnabled {
+            fields.append(field)
+        }
+        for sub in view.subviews {
+            collect(from: sub, into: &fields)
+        }
+    }
+}
+
+private struct EditorTextFieldTabMonitor: NSViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
+    final class Coordinator {
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self else { return event }
+                guard let window = self.view?.window, event.window === window else { return event }
+                guard event.charactersIgnoringModifiers == "\t" else { return event }
+                let mods = event.modifierFlags.intersection([.shift, .command, .option, .control])
+                guard mods.isEmpty || mods == .shift else { return event }
+                EditorTextFieldTabOrder.focusNext(in: window, reverse: mods == .shift)
+                return nil
+            }
+        }
+
+        func teardown() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
         }
     }
 }

@@ -20,8 +20,8 @@ struct MenuBarView: View {
     @State private var inactiveOtherProfilesProgress: CGFloat = 0
     @State private var inactiveEffectsProgress: CGFloat = 0
 
-    /// Inactive outputs visible for this popover session. Cleared profiles stay listed
-    /// until the menu closes, so deselecting doesn’t yank the row mid-edit.
+    /// Inactive outputs pulled from Other Devices this session, so turning EQ on
+    /// doesn’t yank the row before the toggle is saved.
     @State private var pinnedOtherDeviceKeys: Set<String> = []
 
     /// 1 = “Other Devices” (unequalized outputs) disclosure open.
@@ -52,8 +52,7 @@ struct MenuBarView: View {
         }
     }
 
-    /// Connected outputs with no EQ mapping yet — reachable via “Other Devices”.
-    /// Same membership in both modes (non-default, not already shown as an EQ row).
+    /// Connected outputs without EQ enabled — reachable via “Other Devices”.
     private var unlistedDevices: [AudioOutputDevice] {
         appState.devices.filter { device in
             guard !device.isDefault else { return false }
@@ -160,7 +159,6 @@ struct MenuBarView: View {
         }
         .onChange(of: activeDevice?.identityKey) { _, _ in
             syncRenameText()
-            pinOtherDevicesWithProfiles(reset: false)
             focusActiveOutput(animated: false)
         }
         .onChange(of: otherDevices.map(\.identityKey)) { _, keys in
@@ -176,7 +174,7 @@ struct MenuBarView: View {
     }
 
     private func beginPopoverSession() {
-        pinOtherDevicesWithProfiles(reset: true)
+        pinnedOtherDeviceKeys = []
         otherDevicesListProgress = 0
         focusActiveOutput(animated: false)
     }
@@ -530,21 +528,6 @@ struct MenuBarView: View {
     /// Any effect on → Effects starts open so you can see what's running.
     private func preferredEffectsProgress(for identityKey: String) -> CGFloat {
         appState.config.mapping(forIdentity: identityKey).effects.isAudible ? 1 : 0
-    }
-
-    private func pinOtherDevicesWithProfiles(reset: Bool) {
-        let configured = Set(
-            appState.devices.compactMap { device -> String? in
-                guard !device.isDefault else { return nil }
-                guard appState.shouldListInactiveOutput(device.identityKey) else { return nil }
-                return device.identityKey
-            }
-        )
-        if reset {
-            pinnedOtherDeviceKeys = configured
-        } else {
-            pinnedOtherDeviceKeys.formUnion(configured)
-        }
     }
 
     private func syncRenameText() {
@@ -918,8 +901,10 @@ enum MenuChrome {
     static let iconRowHeight: CGFloat = 34
     static let sectionRowHeight: CGFloat = 24
 
-    /// Menu / Control Center list marks. Menu-bar status item stays 18.
+    /// Toggle marks (EQ profiles, effects). Menu-bar status item stays 18.
     static let listIconSize: CGFloat = 26
+    /// Command / action glyphs (Create New EQ, Export, Change Folder).
+    static let commandIconSize: CGFloat = 16
     /// Selected profile / effect while the device toggle is off.
     static let pausedMarkPlate = Color(nsColor: .systemGray)
     static let pausedMarkInk = Color.white
@@ -1625,6 +1610,7 @@ enum ControlCenterLeading {
     case fileExport
     case fileImport
     case restore
+    case externalLink
 }
 
 enum ControlCenterRowStyle {
@@ -1840,6 +1826,11 @@ struct ControlCenterRow: View {
                 case .restore:
                     RestoreIcon()
                         .foregroundStyle(.primary)
+                case .externalLink:
+                    // 17×17 art is full-bleed; 16pt reads larger than the plus/folder glyphs.
+                    ExternalLinkIcon(size: 12)
+                        .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
+                        .foregroundStyle(.primary)
                 }
 
                 Text(title)
@@ -1931,11 +1922,12 @@ struct PlusCommandRow: View {
     }
 }
 
-/// Tabler `folder-open` (24×24), drawn at profile-swatch size.
+/// Tabler `folder-open` (24×24), drawn at command-icon size.
 private struct FolderOpenIcon: View {
     var body: some View {
         FolderOpenShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.commandIconSize, height: MenuChrome.commandIconSize)
             .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
     }
 }
@@ -1969,11 +1961,12 @@ private struct FolderOpenShape: Shape {
     }
 }
 
-/// Tabler `fold-down` (24×24), drawn at profile-swatch size.
+/// Tabler `fold-down` (24×24), drawn at command-icon size.
 private struct FileExportIcon: View {
     var body: some View {
         FileExportShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.commandIconSize, height: MenuChrome.commandIconSize)
             .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
     }
 }
@@ -2005,11 +1998,12 @@ private struct FileExportShape: Shape {
     }
 }
 
-/// Tabler `fold-up` (24×24), drawn at profile-swatch size.
+/// Tabler `fold-up` (24×24), drawn at command-icon size.
 private struct FileImportIcon: View {
     var body: some View {
         FileImportShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.commandIconSize, height: MenuChrome.commandIconSize)
             .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
     }
 }
@@ -2041,11 +2035,12 @@ private struct FileImportShape: Shape {
     }
 }
 
-/// Tabler `restore` (24×24), drawn at profile-swatch size.
+/// Tabler `restore` (24×24), drawn at command-icon size.
 private struct RestoreIcon: View {
     var body: some View {
         RestoreShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.commandIconSize, height: MenuChrome.commandIconSize)
             .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
     }
 }
@@ -2088,11 +2083,12 @@ private struct RestoreShape: Shape {
     }
 }
 
-/// Plus-in-circle from the 37×37 create-profile SVG, drawn at swatch size.
+/// Plus-in-circle from the 37×37 create-profile SVG, drawn at command-icon size.
 private struct PlusCircleIcon: View {
     var body: some View {
         PlusCircleShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            .frame(width: MenuChrome.commandIconSize, height: MenuChrome.commandIconSize)
             .frame(width: MenuChrome.listIconSize, height: MenuChrome.listIconSize)
     }
 }
@@ -2235,10 +2231,12 @@ private struct EditIconShape: Shape {
 
 /// Matches the provided 17×17 external-link SVG (box + arrow).
 struct ExternalLinkIcon: View {
+    var size: CGFloat = MenuChrome.chevronSize
+
     var body: some View {
         ExternalLinkShape()
             .stroke(style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
-            .frame(width: MenuChrome.chevronSize, height: MenuChrome.chevronSize)
+            .frame(width: size, height: size)
     }
 }
 

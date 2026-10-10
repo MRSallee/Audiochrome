@@ -172,6 +172,20 @@ private struct PillNumberField: NSViewRepresentable {
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertTab(_:)) {
+                commit()
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: false)
+                }
+                return true
+            }
+            if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+                commit()
+                if let window = control.window {
+                    EditorTextFieldTabOrder.focusNext(in: window, reverse: true)
+                }
+                return true
+            }
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 commit()
                 control.window?.makeFirstResponder(nil)

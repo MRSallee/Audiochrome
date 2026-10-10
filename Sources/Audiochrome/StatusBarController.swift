@@ -309,7 +309,8 @@ final class StatusBarController: NSObject, ObservableObject {
         let button = statusItem?.button
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
         let hex = appState.activeProfileColorHex
-        // Engaged icon uses the mid swatch so the plate matches the picker.
+        // Profile → color plate. Effects only → white plate, dark bars.
+        // Idle → inverted (dark plate, white bars) so it doesn’t match effects-only.
         let paint = hex.map { ProfileColorPalette.nsColor($0, role: .ui, dark: false) }
         let bands = animate
             ? appState.audioEngine.spectrumLevels.map { CGFloat($0) }
@@ -648,12 +649,21 @@ enum StatusIconImage {
                 )
             }
         } else {
-            NSColor.black.setFill()
-            Self.fillKnockoutBars(plate: plateRect, center: center)
+            NSColor.white.setStroke()
+            let ring = NSBezierPath(ovalIn: plateRect)
+            ring.lineWidth = 1
+            ring.stroke()
+            NSColor.white.setFill()
+            Self.fillSpectrumBars(
+                center: center,
+                bands: [],
+                restExpand: 1,
+                animated: false
+            )
         }
 
         NSGraphicsContext.restoreGraphicsState()
-        image.isTemplate = !isEngaged
+        image.isTemplate = false
         return image
     }
 
@@ -732,16 +742,6 @@ enum StatusIconImage {
             0.7152 * linear(rgb.greenComponent) +
             0.0722 * linear(rgb.blueComponent)
         return luminance > 0.55 ? .black : .white
-    }
-
-    /// White/template plate with rest bars cut out (even-odd).
-    private static func fillKnockoutBars(plate: NSRect, center: CGPoint) {
-        let path = NSBezierPath(ovalIn: plate)
-        path.windingRule = .evenOdd
-        for rect in MenuBarBarsMark.barFrames(center: center) {
-            path.append(NSBezierPath(roundedRect: rect, xRadius: MenuBarBarsMark.barWidth / 2, yRadius: MenuBarBarsMark.barWidth / 2))
-        }
-        path.fill()
     }
 
     /// Five 2 pt capsules, 0.5 pt gaps. Rest is the full 6 / 10 / 12 / 10 / 6 silhouette.
