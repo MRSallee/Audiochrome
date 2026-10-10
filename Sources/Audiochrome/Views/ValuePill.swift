@@ -12,6 +12,7 @@ struct ValuePill: View {
     private var number: Binding<Double>?
     private var numberRange: ClosedRange<Double>?
     private var format: ((Double) -> String)?
+    private var onEditingChange: ((Bool) -> Void)?
 
     static let height: CGFloat = 22
     static let standardWidth: CGFloat = {
@@ -35,13 +36,15 @@ struct ValuePill: View {
         self.number = nil
         self.numberRange = nil
         self.format = nil
+        self.onEditingChange = nil
     }
 
     init(
         number: Binding<Double>,
         in range: ClosedRange<Double>,
         format: @escaping (Double) -> String,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        onEditingChange: ((Bool) -> Void)? = nil
     ) {
         self.display = format(number.wrappedValue)
         self.isEnabled = isEnabled
@@ -51,6 +54,7 @@ struct ValuePill: View {
         self.number = number
         self.numberRange = range
         self.format = format
+        self.onEditingChange = onEditingChange
     }
 
     var body: some View {
@@ -81,7 +85,8 @@ struct ValuePill: View {
                 value: number,
                 range: numberRange,
                 format: format,
-                isEnabled: isEnabled
+                isEnabled: isEnabled,
+                onEditingChange: onEditingChange
             )
             .frame(width: Self.standardWidth, height: Self.height)
         } else {
@@ -113,9 +118,10 @@ private struct PillNumberField: NSViewRepresentable {
     var range: ClosedRange<Double>
     var format: (Double) -> String
     var isEnabled: Bool
+    var onEditingChange: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(value: $value, range: range, format: format)
+        Coordinator(value: $value, range: range, format: format, onEditingChange: onEditingChange)
     }
 
     func makeNSView(context: Context) -> PillNumberNSTextField {
@@ -134,6 +140,9 @@ private struct PillNumberField: NSViewRepresentable {
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         context.coordinator.field = field
         context.coordinator.applyTextColor(isEnabled: isEnabled)
+        field.onEditingChange = { [weak coordinator = context.coordinator] editing in
+            coordinator?.onEditingChange?(editing)
+        }
         return field
     }
 
@@ -141,9 +150,14 @@ private struct PillNumberField: NSViewRepresentable {
         context.coordinator.value = $value
         context.coordinator.range = range
         context.coordinator.format = format
+        context.coordinator.onEditingChange = onEditingChange
         context.coordinator.applyTextColor(isEnabled: isEnabled)
-        if field.currentEditor() == nil, field.stringValue != format(value) {
-            field.stringValue = format(value)
+        let formatted = format(value)
+        if field.stringValue != formatted {
+            field.stringValue = formatted
+            if let editor = field.currentEditor() {
+                editor.selectedRange = NSRange(location: 0, length: (editor.string as NSString).length)
+            }
         }
     }
 
@@ -155,12 +169,19 @@ private struct PillNumberField: NSViewRepresentable {
         var value: Binding<Double>
         var range: ClosedRange<Double>
         var format: (Double) -> String
+        var onEditingChange: ((Bool) -> Void)?
         weak var field: PillNumberNSTextField?
 
-        init(value: Binding<Double>, range: ClosedRange<Double>, format: @escaping (Double) -> String) {
+        init(
+            value: Binding<Double>,
+            range: ClosedRange<Double>,
+            format: @escaping (Double) -> String,
+            onEditingChange: ((Bool) -> Void)?
+        ) {
             self.value = value
             self.range = range
             self.format = format
+            self.onEditingChange = onEditingChange
         }
 
         func applyTextColor(isEnabled: Bool) {
@@ -169,6 +190,7 @@ private struct PillNumberField: NSViewRepresentable {
 
         func controlTextDidEndEditing(_ obj: Notification) {
             commit()
+            onEditingChange?(false)
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -222,6 +244,8 @@ private struct PillNumberField: NSViewRepresentable {
 }
 
 private final class PillNumberNSTextField: NSTextField {
+    var onEditingChange: ((Bool) -> Void)?
+
     override class var cellClass: AnyClass? {
         get { VerticallyCenteredTextFieldCell.self }
         set {}
@@ -255,8 +279,18 @@ private final class PillNumberNSTextField: NSTextField {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok { selectAllText() }
+        if ok {
+            selectAllText()
+            onEditingChange?(true)
+        }
         return ok
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            onEditingChange?(false)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {

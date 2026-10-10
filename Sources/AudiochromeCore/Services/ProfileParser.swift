@@ -74,7 +74,13 @@ public enum ProfileParser {
         }
 
         if sawChannel {
-            return EQProfile(name: name, linked: nil, left: left, right: right)
+            let keepLinked = !linked.filters.isEmpty || linked.preampDB != 0
+            return EQProfile(
+                name: name,
+                linked: keepLinked ? linked : nil,
+                left: left,
+                right: right
+            )
         }
         return EQProfile(name: name, linked: linked, left: nil, right: nil)
     }

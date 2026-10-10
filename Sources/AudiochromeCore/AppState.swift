@@ -712,7 +712,12 @@ public final class AppState: ObservableObject {
         guard var draft = profileEditor else { return }
         let previous = draft
         mutate(&draft)
-        let bandsChanged = previous.bands != draft.bands || previous.hiddenFilters != draft.hiddenFilters
+        let bandsChanged = previous.bands != draft.bands
+            || previous.leftBands != draft.leftBands
+            || previous.rightBands != draft.rightBands
+            || previous.hiddenFilters != draft.hiddenFilters
+            || previous.hiddenLeftFilters != draft.hiddenLeftFilters
+            || previous.hiddenRightFilters != draft.hiddenRightFilters
         if previous.preampDB != draft.preampDB, previous.isAutoPregain {
             draft.isAutoPregain = false
         }
@@ -721,8 +726,7 @@ public final class AppState: ObservableObject {
         }
         let affectsLiveEQ =
             previous.preampDB != draft.preampDB
-            || previous.bands != draft.bands
-            || previous.hiddenFilters != draft.hiddenFilters
+            || bandsChanged
             || previous.colorHex != draft.colorHex
         if affectsLiveEQ {
             draft.revision += 1
@@ -736,12 +740,19 @@ public final class AppState: ObservableObject {
 
     private func autoPregainDB(for draft: ProfileEditorDraft) -> Double {
         var preview = draft.eqProfile
-        preview.linked = ChannelEQ(preampDB: 0, filters: preview.effectiveLeft.filters)
-        let curve = EQProcessor.frequencyResponseCurve(
+        preview.linked = ChannelEQ(preampDB: 0, filters: preview.linked?.filters ?? [])
+        let rate = predictedCurveSampleRate()
+        let leftPeak = EQProcessor.frequencyResponseCurve(
             for: preview,
-            sampleRate: predictedCurveSampleRate()
-        )
-        let raw = -max(0, curve.max() ?? 0)
+            sampleRate: rate,
+            channel: .left
+        ).max() ?? 0
+        let rightPeak = EQProcessor.frequencyResponseCurve(
+            for: preview,
+            sampleRate: rate,
+            channel: .right
+        ).max() ?? 0
+        let raw = -max(0, max(leftPeak, rightPeak))
         return min(12, max(-30, (raw * 10).rounded() / 10))
     }
 

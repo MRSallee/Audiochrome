@@ -11,8 +11,8 @@ struct MenuBarView: View {
 
     /// 1 = system-default output’s EQ panel visible; 0 = collapsed (an inactive output is focused).
     @State private var activePanelProgress: CGFloat = 1
-    @State private var activeOtherProfilesProgress: CGFloat = 0
-    @State private var activeEffectsProgress: CGFloat = 0
+    @State private var activeOtherProfilesProgress: CGFloat = 1
+    @State private var activeEffectsProgress: CGFloat = 1
 
     /// Which inactive output’s EQ panel is open (`nil` = none).
     @State private var expandedOtherDeviceKey: String?
@@ -389,7 +389,7 @@ struct MenuBarView: View {
                 }
             }
 
-            ScrollView(.vertical, showsIndicators: needsScroll) {
+            ScrollViewport(showsIndicators: needsScroll) {
                 VStack(alignment: .leading, spacing: UnlistedDevicesMetrics.rowSpacing) {
                     ForEach(unlistedDevices, id: \.identityKey) { device in
                         if appState.config.customEQPerDevice {
@@ -467,7 +467,7 @@ struct MenuBarView: View {
                 activeEffectsProgress = 0
                 expandedOtherDeviceKey = key
                 otherDevicePanelProgress = 1
-                inactiveOtherProfilesProgress = 0
+                inactiveOtherProfilesProgress = preferredOtherProfilesProgress(for: key)
                 inactiveEffectsProgress = effects
                 colorPickerIdentityKey = nil
                 if renamingIdentityKey != key {
@@ -480,7 +480,7 @@ struct MenuBarView: View {
             activeEffectsProgress = 0
             expandedOtherDeviceKey = key
             otherDevicePanelProgress = 1
-            inactiveOtherProfilesProgress = 0
+            inactiveOtherProfilesProgress = preferredOtherProfilesProgress(for: key)
             inactiveEffectsProgress = effects
             colorPickerIdentityKey = nil
             if renamingIdentityKey != key {
@@ -495,7 +495,7 @@ struct MenuBarView: View {
         if animated {
             popoverChrome.animatingDisclosure {
                 activePanelProgress = 1
-                activeOtherProfilesProgress = 0
+                activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
                 activeEffectsProgress = effects
                 otherDevicePanelProgress = 0
                 inactiveOtherProfilesProgress = 0
@@ -512,7 +512,7 @@ struct MenuBarView: View {
             }
         } else {
             activePanelProgress = 1
-            activeOtherProfilesProgress = 0
+            activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
             activeEffectsProgress = effects
             expandedOtherDeviceKey = nil
             otherDevicePanelProgress = 0
@@ -525,9 +525,16 @@ struct MenuBarView: View {
         }
     }
 
-    /// Any effect on → Effects starts open so you can see what's running.
+    /// No EQ selected, or any effect on → Effects starts open.
     private func preferredEffectsProgress(for identityKey: String) -> CGFloat {
-        appState.config.mapping(forIdentity: identityKey).effects.isAudible ? 1 : 0
+        let mapping = appState.config.mapping(forIdentity: identityKey)
+        if mapping.profileFilename == nil { return 1 }
+        return mapping.effects.isAudible ? 1 : 0
+    }
+
+    /// No EQ selected → Available EQs starts open so you can pick one.
+    private func preferredOtherProfilesProgress(for identityKey: String) -> CGFloat {
+        appState.config.mapping(forIdentity: identityKey).profileFilename == nil ? 1 : 0
     }
 
     private func syncRenameText() {
@@ -1133,8 +1140,11 @@ private struct OutputEQPanel: View {
             }
         }
         .onAppear {
-            if mapping.effects.isAudible {
+            if mapping.effects.isAudible || !hasProfile {
                 effectsProgress = 1
+            }
+            if !hasProfile {
+                otherProfilesProgress = 1
             }
         }
         .onChange(of: mapping.effects) { _, effects in
@@ -1196,6 +1206,8 @@ private struct OutputEQPanel: View {
                         guard hasProfile else { return }
                         popoverChrome.animatingDisclosure {
                             appState.setProfile(forIdentity: identityKey, filename: nil)
+                            otherProfilesProgress = 1
+                            effectsProgress = 1
                         }
                     }
 
@@ -1279,7 +1291,7 @@ private struct OutputEQPanel: View {
 
             VStack(alignment: .leading, spacing: OutputEQPanelMetrics.disclosureRowSpacing) {
                 if scrollHeight > 0 {
-                    ScrollView(.vertical, showsIndicators: needsScroll) {
+                    ScrollViewport(showsIndicators: needsScroll) {
                         VStack(alignment: .leading, spacing: OutputEQPanelMetrics.disclosureRowSpacing) {
                             ForEach(profiles) { profile in
                                 OtherProfileRow(
@@ -1296,10 +1308,19 @@ private struct OutputEQPanel: View {
                                 ? nil
                                 : profile.filename
                             appState.setProfile(forIdentity: identityKey, filename: filename)
+                            if filename == nil {
+                                otherProfilesProgress = 1
+                                effectsProgress = 1
+                            }
                         }
                     } onDelete: {
                                     popoverChrome.animatingDisclosure {
+                                        let wasSelected = profile.filename == mapping.profileFilename
                                         appState.deleteProfile(profile, forIdentity: identityKey)
+                                        if wasSelected {
+                                            otherProfilesProgress = 1
+                                            effectsProgress = 1
+                                        }
                                     }
                                 }
                             }

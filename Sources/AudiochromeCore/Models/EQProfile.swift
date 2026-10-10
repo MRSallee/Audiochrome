@@ -109,14 +109,22 @@ public struct EQProfile: Equatable, Sendable {
         left != nil || right != nil
     }
 
-    /// Effective left curve (L section, else linked).
+    /// Effective left curve: both-channel filters plus any L-only filters.
     public var effectiveLeft: ChannelEQ {
-        left ?? linked ?? ChannelEQ()
+        Self.combined(linked, left)
     }
 
-    /// Effective right curve (R section, else linked / left).
+    /// Effective right curve: both-channel filters plus any R-only filters.
     public var effectiveRight: ChannelEQ {
-        right ?? linked ?? left ?? ChannelEQ()
+        Self.combined(linked, right)
+    }
+
+    private static func combined(_ stereo: ChannelEQ?, _ side: ChannelEQ?) -> ChannelEQ {
+        if stereo == nil, side == nil { return ChannelEQ() }
+        return ChannelEQ(
+            preampDB: (stereo?.preampDB ?? 0) + (side?.preampDB ?? 0),
+            filters: (stereo?.filters ?? []) + (side?.filters ?? [])
+        )
     }
 
     /// Full vertical span of the EQ curve preview (dB). Window is centered on the curve, not 0 dB.

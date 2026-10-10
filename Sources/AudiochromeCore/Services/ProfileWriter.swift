@@ -4,24 +4,32 @@ import Foundation
 public enum ProfileWriter {
     public static func apoText(for profile: EQProfile) -> String {
         var lines: [String] = []
-        if profile.isMultiChannel {
-            if let left = profile.left {
-                lines.append("Channel: L")
-                lines.append(contentsOf: channelLines(left))
-            }
-            if let right = profile.right {
-                if !lines.isEmpty { lines.append("") }
-                lines.append("Channel: R")
-                lines.append(contentsOf: channelLines(right))
-            }
-        } else {
-            lines.append(contentsOf: channelLines(profile.linked ?? ChannelEQ()))
+        let linked = profile.linked ?? ChannelEQ()
+        let hasSides = profile.left != nil || profile.right != nil
+        if !hasSides || !linked.filters.isEmpty || linked.preampDB != 0 {
+            lines.append(contentsOf: channelLines(linked, includePreamp: true))
+        }
+        if let left = profile.left {
+            if !lines.isEmpty { lines.append("") }
+            lines.append("Channel: L")
+            lines.append(contentsOf: channelLines(left, includePreamp: left.preampDB != 0))
+        }
+        if let right = profile.right {
+            if !lines.isEmpty { lines.append("") }
+            lines.append("Channel: R")
+            lines.append(contentsOf: channelLines(right, includePreamp: right.preampDB != 0))
+        }
+        if lines.isEmpty {
+            lines.append(contentsOf: channelLines(ChannelEQ(), includePreamp: true))
         }
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func channelLines(_ channel: ChannelEQ) -> [String] {
-        var lines = ["Preamp: \(formatNumber(channel.preampDB)) dB"]
+    private static func channelLines(_ channel: ChannelEQ, includePreamp: Bool) -> [String] {
+        var lines: [String] = []
+        if includePreamp {
+            lines.append("Preamp: \(formatNumber(channel.preampDB)) dB")
+        }
         for (index, filter) in channel.filters.enumerated() {
             guard let type = filter.kind.apoType else { continue }
             let on = filter.enabled ? "ON" : "OFF"

@@ -10,10 +10,19 @@ struct ProfileEditorView: View {
     @State private var showColorPicker = false
     @State private var isEditingName = false
     @State private var lingeringDraft: ProfileEditorDraft?
-    @State private var filterViewportHeight: CGFloat = 0
-    @State private var expandedFilterHeight: CGFloat = 0
-    @State private var hoveringFilterRowCount = 0
     @State private var filterScrollLanes: [FilterScrollLane: CGRect] = [:]
+    @State private var focusedFilterLane: FilterScrollLane?
+    @State private var filterHeaderHeight: CGFloat = 0
+    @State private var filterExpandedBodyHeight: CGFloat = 0
+    @State private var closingBandID: UUID?
+    @State private var filterDisclosureBusy = false
+    @State private var filterScroller = FilterListScroller()
+    @State private var bothProgress: CGFloat = 1
+    @State private var leftProgress: CGFloat = 0
+    @State private var rightProgress: CGFloat = 0
+    @State private var didSeedChannelProgress = false
+    @State private var suppressScrollIndicators = false
+    @State private var scrollIndicatorGeneration = 0
 
     private enum Limits {
         static let frequency = 20.0...20_000.0
@@ -22,12 +31,10 @@ struct ProfileEditorView: View {
         static let preamp = -30.0...12.0
         static let filterListMaxHeight: CGFloat = 360
         static let sliderRowSpacing: CGFloat = 8
-    }
-
-    private var expandedFilterFitsInView: Bool {
-        expandedFilterHeight > 0
-            && filterViewportHeight > 0
-            && expandedFilterHeight <= filterViewportHeight + 1
+        static let filterDividerHeight: CGFloat = 1
+        static let fallbackHeaderHeight: CGFloat = 52
+        static let fallbackExpandedBodyHeight: CGFloat = 136
+        static let channelSectionTopPadding: CGFloat = 4
     }
 
     var body: some View {
@@ -39,11 +46,20 @@ struct ProfileEditorView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        .onAppear { lingeringDraft = appState.profileEditor }
-        .onChange(of: appState.profileEditor) { _, new in
-            if let new { lingeringDraft = new }
+        .onAppear {
+            lingeringDraft = appState.profileEditor
+            if let draft = appState.profileEditor { seedChannelProgressIfNeeded(draft) }
         }
-        .onDisappear { lingeringDraft = nil }
+        .onChange(of: appState.profileEditor) { _, new in
+            if let new {
+                lingeringDraft = new
+                seedChannelProgressIfNeeded(new)
+            }
+        }
+        .onDisappear {
+            lingeringDraft = nil
+            didSeedChannelProgress = false
+        }
     }
 
     private func editorBody(_ draft: ProfileEditorDraft) -> some View {
@@ -75,25 +91,13 @@ struct ProfileEditorView: View {
 
             filterList(draft)
 
-            PlusCommandRow(title: "Add Filter") {
-                popoverChrome.animatingDisclosure {
-                    appState.updateProfileEditor { $0.addPeakingBand() }
-                }
-            }
-            .padding(
-                .top,
-                draft.bands.isEmpty || draft.expandedBandID == draft.bands.last?.id
-                    ? MenuChrome.waveformSpacing
-                    : 0
-            )
-
             Divider()
                 .padding(.horizontal, MenuChrome.dividerInset)
                 .padding(.top, MenuChrome.waveformSpacing)
                 .padding(.bottom, MenuChrome.waveformSpacing)
 
             ControlCenterRow(title: "EQ on Squiglink", style: .command, leading: .externalLink) {
-                NSWorkspace.shared.open(SquiglinkURL.editorURL(filters: draft.bands.map(\.filter)))
+                NSWorkspace.shared.open(SquiglinkURL.editorURL(filters: draft.allEditorBands.map(\.filter)))
             }
             .padding(.bottom, MenuChrome.menuPadding)
         }
@@ -208,49 +212,94 @@ struct ProfileEditorView: View {
     }
 
     private func filterList(_ draft: ProfileEditorDraft) -> some View {
-        ScrollView(.vertical, showsIndicators: draft.bands.count > 3) {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(ProfileEditorChannel.allCases.enumerated()), id: \.element) { index, channel in
+                if index > 0 {
+                    Divider()
+                        .padding(.horizontal, MenuChrome.dividerInset)
+                        .padding(.vertical, Limits.channelSectionTopPadding)
+                }
+                channelSection(channel, draft: draft)
+            }
+        }
+        .onPreferenceChange(FilterBlockFramesKey.self) { frames in
+            guard !filterDisclosureBusy else { return }
+            updateMeasuredFilterHeights(frames, expandedID: draft.expandedBandID)
+        }
+        .onChange(of: draft.expandedBandID) { _, _ in
+            focusedFilterLane = nil
+        }
+    }
+
+    private func channelSection(_ channel: ProfileEditorChannel, draft: ProfileEditorDraft) -> some View {
+        let bands = draft.bands(for: channel)
+        let progress = progress(for: channel)
+        let filtersHeight = filterContentHeight(bands: bands, expandedID: draft.expandedBandID)
+        let scrollHeight = min(filtersHeight, Limits.filterListMaxHeight)
+        let addPadding = addFilterTopPadding(bands: bands, expandedID: draft.expandedBandID)
+        let bodyHeight = scrollHeight + addPadding + MenuChrome.iconRowHeight
+        return VStack(alignment: .leading, spacing: 0) {
+            ControlCenterRow(
+                title: channel.title,
+                style: .disclosure,
+                trailing: progress.wrappedValue > 0.5 ? .chevronDown : .chevronRight
+            ) {
+                toggleChannelSection(channel, draft: draft)
+            }
+
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(draft.bands.enumerated()), id: \.element.id) { index, band in
-                    let expanded = draft.expandedBandID == band.id
-                    if index > 0, draft.expandedBandID != draft.bands[index - 1].id {
-                        Divider().padding(.horizontal, MenuChrome.dividerInset)
-                    }
-                    VStack(alignment: .leading, spacing: 0) {
-                        filterHeader(band, expanded: expanded, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
-                            .contextMenu { filterDeleteMenu(band) }
-                        if expanded {
-                            MenuGroupedSection {
-                                expandedFilterControls(band, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
+                if !bands.isEmpty {
+                    ScrollViewport(showsIndicators: showsFilterScrollIndicators(filtersHeight: filtersHeight)) {
+                        filterRows(bands, draft: draft)
+                            .coordinateSpace(name: "filterList")
+                            .background {
+                                if progress.wrappedValue > 0.5 {
+                                    FilterListScrollBridge {
+                                        filterScroller.scrollView = $0
+                                        filterScroller.applyPinnedHeight()
+                                    }
+                                }
                             }
-                            .contextMenu { filterDeleteMenu(band) }
-                        }
                     }
-                    .background {
-                        if expanded {
-                            GeometryReader { geo in
-                                Color.clear.preference(
-                                    key: ExpandedFilterHeightKey.self,
-                                    value: geo.size.height
-                                )
-                            }
-                        }
+                    .frame(height: scrollHeight)
+                }
+
+                PlusCommandRow(title: "Add Filter") {
+                    addFilter(to: channel)
+                }
+                .padding(.top, addPadding)
+            }
+            .frame(height: progress.wrappedValue * bodyHeight, alignment: .top)
+            .clipped()
+            .allowsHitTesting(progress.wrappedValue > 0.98)
+        }
+        .padding(.top, channel == .both ? Limits.channelSectionTopPadding : 0)
+    }
+
+    private func filterRows(_ bands: [ProfileEditorBand], draft: ProfileEditorDraft) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(bands.enumerated()), id: \.element.id) { index, band in
+                let expanded = draft.expandedBandID == band.id
+                let previousID = index > 0 ? bands[index - 1].id : nil
+                if index > 0,
+                   draft.expandedBandID != previousID,
+                   closingBandID != previousID {
+                    Divider().padding(.horizontal, MenuChrome.dividerInset)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    filterHeader(band, expanded: expanded, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
+                        .contextMenu { filterDeleteMenu(band) }
+                    expandedFilterSlot(band, expanded: expanded, accent: draft.colorHex.profileColor(.ui, scheme: colorScheme))
+                }
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: FilterBlockFramesKey.self,
+                            value: [band.id: geo.frame(in: .named("filterList"))]
+                        )
                     }
                 }
             }
-        }
-        .frame(maxHeight: Limits.filterListMaxHeight)
-        .scrollDisabled(expandedFilterFitsInView && hoveringFilterRowCount > 0)
-        .onPreferenceChange(ExpandedFilterHeightKey.self) { expandedFilterHeight = $0 }
-        .onChange(of: draft.expandedBandID) { _, id in
-            if id == nil {
-                expandedFilterHeight = 0
-                hoveringFilterRowCount = 0
-            }
-        }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height
-        } action: { height in
-            filterViewportHeight = height
         }
     }
 
@@ -258,22 +307,33 @@ struct ProfileEditorView: View {
         let filter = band.filter
         return CollapsedBandRow(
             onLeadingMetricsTap: {
-                popoverChrome.animatingDisclosure {
-                    appState.updateProfileEditor {
-                        $0.expandedBandID = expanded ? nil : band.id
-                    }
-                }
+                toggleFilterExpanded(band, isExpanded: expanded)
             },
             metricsEnabled: filter.enabled,
             metricsPrimary: expanded
         ) {
             ValuePill(filter.kind.editorLabel, isEnabled: filter.enabled)
         } q: {
-            Text("Q \(ProfileWriter.formatNumber(filter.q))")
+            headerMetric(
+                "Q \(ProfileWriter.formatNumber(filter.q))",
+                expanded: expanded,
+                enabled: filter.enabled,
+                alignment: .left
+            )
         } frequency: {
-            Text(compactFrequency(filter.frequencyHz))
+            headerMetric(
+                compactFrequency(filter.frequencyHz),
+                expanded: expanded,
+                enabled: filter.enabled,
+                alignment: .right
+            )
         } gain: {
-            Text(compactGain(filter.gainDB))
+            headerMetric(
+                compactGain(filter.gainDB),
+                expanded: expanded,
+                enabled: filter.enabled,
+                alignment: .right
+            )
         } trailing: {
             Toggle(
                 "",
@@ -291,6 +351,32 @@ struct ProfileEditorView: View {
             .tint(accent)
             .controlSize(.regular)
         }
+    }
+
+    /// Height-clipped slot so the controls reveal in-place instead of fading over the rows below.
+    @ViewBuilder
+    private func expandedFilterSlot(
+        _ band: ProfileEditorBand,
+        expanded: Bool,
+        accent: Color
+    ) -> some View {
+        let bodyHeight = filterExpandedBodyHeight > 0
+            ? filterExpandedBodyHeight
+            : Limits.fallbackExpandedBodyHeight
+        let showBody = expanded || closingBandID == band.id
+        Color.clear
+            .frame(height: expanded ? bodyHeight : 0)
+            .overlay(alignment: .top) {
+                if showBody {
+                    MenuGroupedSection {
+                        expandedFilterControls(band, accent: accent)
+                    }
+                    .frame(height: bodyHeight, alignment: .top)
+                    .contextMenu { filterDeleteMenu(band) }
+                }
+            }
+            .clipped()
+            .allowsHitTesting(expanded)
     }
 
     private func expandedFilterControls(_ band: ProfileEditorBand, accent: Color) -> some View {
@@ -385,7 +471,7 @@ struct ProfileEditorView: View {
         .coordinateSpace(name: "filterEdit")
         .overlay {
             FilterSectionScrollCapture(
-                scrollNudgesEnabled: expandedFilterFitsInView,
+                focusedLane: focusedFilterLane,
                 lanes: filterScrollLanes,
                 onScrollTick: { lane, ticks in
                     switch lane {
@@ -400,9 +486,6 @@ struct ProfileEditorView: View {
                             $0.gainDB = snappedGain($0.gainDB + 0.1 * Double(ticks))
                         }
                     }
-                },
-                onHoverChange: { hovering in
-                    hoveringFilterRowCount = max(0, hoveringFilterRowCount + (hovering ? 1 : -1))
                 }
             )
             .allowsHitTesting(false)
@@ -423,19 +506,31 @@ struct ProfileEditorView: View {
     ) -> some View {
         HStack(spacing: 4) {
             controlLabel(title)
-            ValuePill(number: number, in: numberRange, format: format, isEnabled: isEnabled)
+            ValuePill(
+                number: number,
+                in: numberRange,
+                format: format,
+                isEnabled: isEnabled,
+                onEditingChange: { editing in
+                    if editing {
+                        focusedFilterLane = lane
+                    } else if focusedFilterLane == lane {
+                        focusedFilterLane = nil
+                    }
+                }
+            )
             FilterSlider(value: slider, in: sliderRange)
+                .background {
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: FilterScrollLaneFramesKey.self,
+                            value: [lane: geo.frame(in: .named("filterEdit"))]
+                        )
+                    }
+                }
         }
         .padding(.vertical, Limits.sliderRowSpacing / 2)
         .frame(maxWidth: .infinity)
-        .background {
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: FilterScrollLaneFramesKey.self,
-                    value: [lane: geo.frame(in: .named("filterEdit"))]
-                )
-            }
-        }
     }
 
     @ViewBuilder
@@ -468,8 +563,82 @@ struct ProfileEditorView: View {
 
     private func updateBand(_ id: UUID, _ mutate: (inout EQFilter) -> Void) {
         appState.updateProfileEditor { draft in
-            guard let index = draft.bands.firstIndex(where: { $0.id == id }) else { return }
-            mutate(&draft.bands[index].filter)
+            draft.updateBand(id, mutate)
+        }
+    }
+
+    private func progress(for channel: ProfileEditorChannel) -> Binding<CGFloat> {
+        switch channel {
+        case .both: return $bothProgress
+        case .left: return $leftProgress
+        case .right: return $rightProgress
+        }
+    }
+
+    private func addFilter(to channel: ProfileEditorChannel) {
+        popoverChrome.animatingDisclosure {
+            appState.updateProfileEditor { $0.addPeakingBand(to: channel) }
+        }
+    }
+
+    private func addFilterTopPadding(bands: [ProfileEditorBand], expandedID: UUID?) -> CGFloat {
+        guard let last = bands.last, expandedID == last.id else { return 0 }
+        return MenuChrome.waveformSpacing
+    }
+
+    private func filterContentHeight(bands: [ProfileEditorBand], expandedID: UUID?) -> CGFloat {
+        guard !bands.isEmpty else { return 0 }
+        let header = filterHeaderHeight > 0 ? filterHeaderHeight : Limits.fallbackHeaderHeight
+        let body = filterExpandedBodyHeight > 0 ? filterExpandedBodyHeight : Limits.fallbackExpandedBodyHeight
+        var height: CGFloat = 0
+        for (index, band) in bands.enumerated() {
+            if index > 0, expandedID != bands[index - 1].id {
+                height += Limits.filterDividerHeight
+            }
+            height += header
+            if expandedID == band.id {
+                height += body
+            }
+        }
+        return height
+    }
+
+    private func seedChannelProgressIfNeeded(_: ProfileEditorDraft) {
+        guard !didSeedChannelProgress else { return }
+        didSeedChannelProgress = true
+        bothProgress = 1
+        leftProgress = 0
+        rightProgress = 0
+    }
+
+    private func showsFilterScrollIndicators(filtersHeight: CGFloat) -> Bool {
+        guard !suppressScrollIndicators, !filterDisclosureBusy else { return false }
+        return filtersHeight > Limits.filterListMaxHeight + 0.5
+    }
+
+    private func hideScrollIndicatorsDuringDisclosure() {
+        suppressScrollIndicators = true
+        filterScroller.setVerticalScrollerHidden(true)
+        scrollIndicatorGeneration += 1
+        let generation = scrollIndicatorGeneration
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(PopoverChrome.disclosureDuration + 0.05))
+            guard generation == scrollIndicatorGeneration else { return }
+            filterScroller.setVerticalScrollerHidden(false)
+            suppressScrollIndicators = false
+        }
+    }
+
+    private func toggleChannelSection(_ channel: ProfileEditorChannel, draft: ProfileEditorDraft) {
+        let opening = progress(for: channel).wrappedValue < 0.5
+        hideScrollIndicatorsDuringDisclosure()
+        popoverChrome.animatingDisclosure {
+            for other in ProfileEditorChannel.allCases {
+                progress(for: other).wrappedValue = (opening && other == channel) ? 1 : 0
+            }
+            if let id = draft.expandedBandID, draft.channel(containing: id) != (opening ? channel : nil) {
+                appState.updateProfileEditor { $0.expandedBandID = nil }
+            }
         }
     }
 
@@ -524,6 +693,101 @@ struct ProfileEditorView: View {
 
     private func compactGain(_ db: Double) -> String {
         "\(ProfileWriter.formatNumber(db))dB"
+    }
+
+    /// AppKit labels don’t interpolate through the disclosure animation, so they
+    /// stay glued to the pill / switch. SwiftUI `Text` slides on a different clock.
+    private func headerMetric(
+        _ text: String,
+        expanded: Bool,
+        enabled: Bool,
+        alignment: NSTextAlignment
+    ) -> some View {
+        let color: NSColor
+        if !enabled {
+            color = .tertiaryLabelColor
+        } else if expanded {
+            color = .labelColor
+        } else {
+            color = .secondaryLabelColor
+        }
+        return AppKitLabel(
+            text: text,
+            font: CollapsedColumns.nsFont,
+            color: color,
+            alignment: alignment
+        )
+    }
+
+    private func toggleFilterExpanded(_ band: ProfileEditorBand, isExpanded: Bool) {
+        focusedFilterLane = nil
+        filterDisclosureBusy = true
+        if isExpanded {
+            closingBandID = band.id
+            popoverChrome.animatingDisclosure {
+                appState.updateProfileEditor { $0.expandedBandID = nil }
+            }
+            finishFilterDisclosure(closing: band.id)
+            return
+        }
+        guard let draft = appState.profileEditor ?? lingeringDraft else {
+            filterDisclosureBusy = false
+            return
+        }
+        let previous = draft.expandedBandID
+        closingBandID = previous
+        let header = filterHeaderHeight > 0 ? filterHeaderHeight : Limits.fallbackHeaderHeight
+        let body = filterExpandedBodyHeight > 0 ? filterExpandedBodyHeight : Limits.fallbackExpandedBodyHeight
+        let channel = draft.channel(containing: band.id) ?? .both
+        let after = PredictedFilterLayout.predict(
+            bands: draft.bands(for: channel),
+            expanding: band.id,
+            headerHeight: header,
+            expandedBodyHeight: body,
+            dividerHeight: Limits.filterDividerHeight
+        )
+        let viewport = filterScroller.viewportHeight
+        let currentOffset = filterScroller.offsetYFromTop()
+        let target = after.offsetKeepingBlockVisible(
+            currentOffset: currentOffset,
+            viewportHeight: viewport
+        )
+        filterScroller.pinContentHeight(after.contentHeight)
+        popoverChrome.animatingDisclosure {
+            appState.updateProfileEditor { $0.expandedBandID = band.id }
+        }
+        if abs(target - filterScroller.offsetYFromTop()) > 0.5 {
+            filterScroller.animateOffsetY(
+                target,
+                duration: PopoverChrome.disclosureDuration,
+                predictedContentHeight: after.contentHeight
+            )
+        }
+        finishFilterDisclosure(closing: previous)
+    }
+
+    private func finishFilterDisclosure(closing id: UUID?) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(PopoverChrome.disclosureDuration))
+            if let id, closingBandID == id {
+                closingBandID = nil
+            }
+            filterScroller.clearPinnedHeight()
+            filterDisclosureBusy = false
+        }
+    }
+
+    private func updateMeasuredFilterHeights(_ frames: [UUID: CGRect], expandedID: UUID?) {
+        if let collapsed = frames.first(where: { $0.key != expandedID && $0.key != closingBandID })?.value.height,
+           collapsed > 0 {
+            filterHeaderHeight = collapsed
+        }
+        if let expandedID, let frame = frames[expandedID], filterHeaderHeight > 0 {
+            let body = frame.height - filterHeaderHeight
+            if body > 0 {
+                filterExpandedBodyHeight = body
+            }
+        }
     }
 
     private func save() {
@@ -1179,7 +1443,7 @@ private struct EditorTextFieldTabMonitor: NSViewRepresentable {
     }
 }
 
-/// Captures the wheel over the whole row (label + pill + slider) without eating clicks.
+/// Q / Hz / dB slider lanes. Wheel nudges only the focused lane’s slider track.
 private enum FilterScrollLane: Hashable {
     case q, hz, db
 }
@@ -1195,69 +1459,38 @@ private struct FilterScrollLaneFramesKey: PreferenceKey {
     }
 }
 
-/// Full expanded-filter capture so left/right padding still nudges Q / Hz / dB.
+/// Wheel over a slider track nudges that value only while its text field is focused.
 private struct FilterSectionScrollCapture: NSViewRepresentable {
-    var scrollNudgesEnabled: Bool
+    var focusedLane: FilterScrollLane?
     var lanes: [FilterScrollLane: CGRect]
     var onScrollTick: (FilterScrollLane, Int) -> Void
-    var onHoverChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> FilterSectionScrollView {
         let view = FilterSectionScrollView()
-        view.scrollNudgesEnabled = scrollNudgesEnabled
+        view.focusedLane = focusedLane
         view.lanes = lanes
         view.onScrollTick = onScrollTick
-        view.onHoverChange = onHoverChange
         view.clipsToBounds = false
         return view
     }
 
     func updateNSView(_ view: FilterSectionScrollView, context: Context) {
-        view.scrollNudgesEnabled = scrollNudgesEnabled
+        view.focusedLane = focusedLane
         view.lanes = lanes
         view.onScrollTick = onScrollTick
-        view.onHoverChange = onHoverChange
     }
 }
 
 private final class FilterSectionScrollView: NSView {
-    var scrollNudgesEnabled = false
+    var focusedLane: FilterScrollLane?
     var lanes: [FilterScrollLane: CGRect] = [:]
     var onScrollTick: ((FilterScrollLane, Int) -> Void)?
-    var onHoverChange: ((Bool) -> Void)?
 
     private var wheelRemainder: CGFloat = 0
     private var monitor: Any?
-    private var hoverTrackingArea: NSTrackingArea?
-    private var isHovered = false
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea {
-            removeTrackingArea(hoverTrackingArea)
-        }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        hoverTrackingArea = area
-        addTrackingArea(area)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        setHovered(true)
-        super.mouseEntered(with: event)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        setHovered(false)
-        super.mouseExited(with: event)
     }
 
     override func viewDidMoveToWindow() {
@@ -1266,7 +1499,6 @@ private final class FilterSectionScrollView: NSView {
             installMonitor()
         } else {
             removeMonitor()
-            setHovered(false)
         }
     }
 
@@ -1278,12 +1510,11 @@ private final class FilterSectionScrollView: NSView {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             guard let self else { return event }
-            guard self.scrollNudgesEnabled, self.containsMouse(of: event) else {
+            guard let focusedLane = self.focusedLane,
+                  self.lane(atEvent: event) == focusedLane,
+                  let onScrollTick = self.onScrollTick
+            else {
                 return event
-            }
-            self.setHovered(true)
-            guard let lane = self.lane(atEvent: event), let onScrollTick = self.onScrollTick else {
-                return nil
             }
             let delta = FilterSectionScrollView.valueDelta(from: event)
             self.wheelRemainder += delta
@@ -1291,7 +1522,7 @@ private final class FilterSectionScrollView: NSView {
             while abs(self.wheelRemainder) >= threshold {
                 let tick = self.wheelRemainder > 0 ? 1 : -1
                 self.wheelRemainder -= CGFloat(tick) * threshold
-                onScrollTick(lane, tick)
+                onScrollTick(focusedLane, tick)
             }
             return nil
         }
@@ -1304,35 +1535,21 @@ private final class FilterSectionScrollView: NSView {
         }
     }
 
-    private func setHovered(_ hovering: Bool) {
-        guard isHovered != hovering else { return }
-        isHovered = hovering
-        onHoverChange?(hovering)
-    }
-
-    private func containsMouse(of event: NSEvent) -> Bool {
-        guard let window, bounds.width > 0, bounds.height > 0 else { return false }
-        return bounds.contains(mousePoint(of: event, in: window))
-    }
-
     private func lane(atEvent event: NSEvent) -> FilterScrollLane? {
-        guard let window else { return nil }
-        let point = mousePoint(of: event, in: window)
+        guard window != nil else { return nil }
+        let point = mousePoint(of: event)
         let swiftPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-        for (lane, frame) in lanes {
-            let hit = CGRect(x: 0, y: frame.minY, width: bounds.width, height: max(frame.height, 1))
-            if hit.contains(swiftPoint) {
-                return lane
-            }
+        for (lane, frame) in lanes where frame.contains(swiftPoint) {
+            return lane
         }
         return nil
     }
 
-    private func mousePoint(of event: NSEvent, in window: NSWindow) -> NSPoint {
+    private func mousePoint(of event: NSEvent) -> NSPoint {
         if event.window === window {
             return convert(event.locationInWindow, from: nil)
         }
-        if event.window == nil {
+        if event.window == nil, let window {
             return convert(window.mouseLocationOutsideOfEventStream, from: nil)
         }
         return NSPoint(x: -1, y: -1)
@@ -1348,11 +1565,199 @@ private final class FilterSectionScrollView: NSView {
     }
 }
 
-private struct ExpandedFilterHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+private struct FilterBlockFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [UUID: CGRect],
+        nextValue: () -> [UUID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
     }
+}
+
+/// After-expand list geometry so we can scroll before SwiftUI lays out the new block.
+private struct PredictedFilterLayout {
+    var contentHeight: CGFloat
+    var blockMinY: CGFloat
+    var blockHeight: CGFloat
+
+    /// Keep the current scroll if the opened block already fits. Otherwise nudge
+    /// just enough to keep the header and the new controls on screen.
+    func offsetKeepingBlockVisible(currentOffset: CGFloat, viewportHeight: CGFloat) -> CGFloat {
+        guard viewportHeight > 0 else { return 0 }
+        let maxScroll = max(0, contentHeight - viewportHeight)
+        let minOffset = min(maxScroll, max(0, blockMinY + blockHeight - viewportHeight))
+        let maxOffset = min(maxScroll, max(0, blockMinY))
+        if minOffset > maxOffset {
+            return minOffset
+        }
+        return min(maxOffset, max(minOffset, currentOffset))
+    }
+
+    static func predict(
+        bands: [ProfileEditorBand],
+        expanding: UUID,
+        headerHeight: CGFloat,
+        expandedBodyHeight: CGFloat,
+        dividerHeight: CGFloat
+    ) -> PredictedFilterLayout {
+        var y: CGFloat = 0
+        var blockMinY: CGFloat = 0
+        let blockHeight = headerHeight + expandedBodyHeight
+        for (i, band) in bands.enumerated() {
+            if i > 0, expanding != bands[i - 1].id {
+                y += dividerHeight
+            }
+            if band.id == expanding {
+                blockMinY = y
+                y += blockHeight
+            } else {
+                y += headerHeight
+            }
+        }
+        return PredictedFilterLayout(
+            contentHeight: y,
+            blockMinY: blockMinY,
+            blockHeight: blockHeight
+        )
+    }
+}
+
+@MainActor
+private final class FilterListScroller {
+    weak var scrollView: NSScrollView?
+    private var pinnedContentHeight: CGFloat = 0
+
+    var viewportHeight: CGFloat {
+        scrollView?.contentView.bounds.height ?? 0
+    }
+
+    var contentHeight: CGFloat {
+        scrollView?.documentView?.frame.height ?? 0
+    }
+
+    func offsetYFromTop() -> CGFloat {
+        guard let scrollView else { return 0 }
+        return offsetYFromTop(in: scrollView)
+    }
+
+    func setVerticalScrollerHidden(_ hidden: Bool) {
+        guard let scrollView else { return }
+        scrollView.verticalScroller?.alphaValue = hidden ? 0 : 1
+        scrollView.verticalScroller?.isHidden = hidden
+    }
+
+    func pinContentHeight(_ height: CGFloat) {
+        pinnedContentHeight = height
+        applyPinnedHeight()
+    }
+
+    func clearPinnedHeight() {
+        pinnedContentHeight = 0
+    }
+
+    func applyPinnedHeight() {
+        guard pinnedContentHeight > 0, let scrollView, let document = scrollView.documentView else { return }
+        let visible = offsetYFromTop(in: scrollView)
+        guard document.frame.height + 0.5 < pinnedContentHeight else { return }
+        var frame = document.frame
+        frame.size.height = pinnedContentHeight
+        document.frame = frame
+        setOffsetYFromTop(visible, in: scrollView, animated: false)
+    }
+
+    func animateOffsetY(
+        _ y: CGFloat,
+        duration: TimeInterval,
+        predictedContentHeight: CGFloat
+    ) {
+        guard let scrollView else { return }
+        let clip = scrollView.contentView
+        let viewport = clip.bounds.height
+        guard viewport > 0 else { return }
+        pinContentHeight(predictedContentHeight)
+        let contentH = max(predictedContentHeight, scrollView.documentView?.frame.height ?? 0)
+        let clamped = min(max(0, contentH - viewport), max(0, y))
+        setOffsetYFromTop(clamped, in: scrollView, animated: true, duration: duration)
+    }
+
+    private func offsetYFromTop(in scrollView: NSScrollView) -> CGFloat {
+        let clip = scrollView.contentView
+        if clip.isFlipped {
+            return clip.bounds.origin.y
+        }
+        let docH = scrollView.documentView?.frame.height ?? clip.bounds.height
+        return docH - clip.bounds.height - clip.bounds.origin.y
+    }
+
+    private func setOffsetYFromTop(
+        _ y: CGFloat,
+        in scrollView: NSScrollView,
+        animated: Bool,
+        duration: TimeInterval = 0
+    ) {
+        let clip = scrollView.contentView
+        let contentH = max(
+            pinnedContentHeight,
+            scrollView.documentView?.frame.height ?? 0
+        )
+        let origin = boundsOrigin(forOffsetY: y, clip: clip, contentHeight: contentH)
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                clip.animator().setBoundsOrigin(origin)
+            } completionHandler: {
+                scrollView.reflectScrolledClipView(clip)
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                clip.setBoundsOrigin(origin)
+            }
+            scrollView.reflectScrolledClipView(clip)
+        }
+    }
+
+    private func boundsOrigin(
+        forOffsetY y: CGFloat,
+        clip: NSClipView,
+        contentHeight: CGFloat
+    ) -> NSPoint {
+        let x = clip.bounds.origin.x
+        if clip.isFlipped {
+            return NSPoint(x: x, y: y)
+        }
+        return NSPoint(x: x, y: contentHeight - clip.bounds.height - y)
+    }
+}
+
+private struct FilterListScrollBridge: NSViewRepresentable {
+    var onResolve: (NSScrollView?) -> Void
+
+    func makeNSView(context: Context) -> FilterListScrollBridgeView {
+        let view = FilterListScrollBridgeView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ view: FilterListScrollBridgeView, context: Context) {
+        view.onResolve = onResolve
+        onResolve(view.enclosingScrollView)
+    }
+}
+
+private final class FilterListScrollBridgeView: NSView {
+    var onResolve: ((NSScrollView?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onResolve?(enclosingScrollView)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private extension Comparable {
