@@ -11,7 +11,7 @@ When creating or editing a GitHub release (`gh release create` / `gh release edi
 - Do not put a download link in the notes. The Assets list is enough.
 - Upload **one** app zip, named `Audiochrome.zip` (copy of the notarized `Audiochrome-<version>.zip`). Do not also attach the versioned filename.
 - Leave GitHub’s source archives as-is.
-- After a versioned release, update the README download line to `Download vX.Y.Z (release history)` — Download → `releases/latest/download/Audiochrome.zip`, release history → `releases`.
+- After a versioned release, update the README download line to `Download Audiochrome (X.Y.Z version history)` — Download Audiochrome → `releases/latest/download/Audiochrome.zip`, X.Y.Z version history → `releases`.
 
 ```markdown
 Signed and notarized macOS build.
