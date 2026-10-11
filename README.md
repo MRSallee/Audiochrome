@@ -20,6 +20,7 @@
 2. Move `Audiochrome.app` to Applications and open it. Audiochrome lives in the menu bar.
 3. Grant **System Audio Recording** when prompted. If EQ doesn’t start after allowing, choose Relaunch in the Audiochrome menu.
 4. Select an output, turn EQ on, and pick a profile.
+5. No driver installation required.
 
 ## Requirements
 
