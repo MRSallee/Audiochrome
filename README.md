@@ -1,6 +1,10 @@
-# Audiochrome
+<p align="center">
+  <img src="Sources/Audiochrome/Resources/AudiochromeLogo.png" alt="Audiochrome" width="320">
+</p>
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
+
+**[Download](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** the signed, notarized app (macOS 14.2+).
 
 > **v1.6.8** — EQ editor groups filters by Both / Left / Right channel; Available EQs and Effects open when nothing is selected; Other Devices and an open device stay exclusive.  
 > Grant **System Audio Recording** access when prompted.
