@@ -12,10 +12,14 @@
 - Saturation, crossfeed, and subharmonics effects
 - Disables cleanly. Doesn't touch system audio when Audiochrome is off
 
-**[Download](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** the signed, notarized app (macOS 14.2+).
+**[Download](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** v1.6.8 ([release history](https://github.com/MRSallee/Audiochrome/releases))
 
-> **v1.6.8** — EQ editor groups filters by Both / Left / Right channel; Available EQs and Effects open when nothing is selected; Other Devices and an open device stay exclusive.  
-> Grant **System Audio Recording** access when prompted.
+## Install
+
+1. Download and unzip `Audiochrome.zip`.
+2. Move `Audiochrome.app` to Applications and open it. Audiochrome lives in the menu bar.
+3. Grant **System Audio Recording** when prompted. If EQ doesn’t start after allowing, choose Relaunch in the Audiochrome menu.
+4. Select an output, turn EQ on, and pick a profile.
 
 ## Requirements
 

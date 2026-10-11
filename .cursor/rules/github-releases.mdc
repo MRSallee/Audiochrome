@@ -1,0 +1,22 @@
+---
+description: GitHub release notes and assets
+alwaysApply: true
+---
+
+# GitHub releases
+
+When creating or editing a GitHub release (`gh release create` / `gh release edit`):
+
+- Notes are a one-line intro, then a **markdown bullet list** (one change per bullet). Never a paragraph of semicolon-joined sentences.
+- Do not put a download link in the notes. The Assets list is enough.
+- Upload **one** app zip, named `Audiochrome.zip` (copy of the notarized `Audiochrome-<version>.zip`). Do not also attach the versioned filename.
+- Leave GitHub’s source archives as-is.
+- After a versioned release, update the README download line to `Download vX.Y.Z (release history)` — Download → `releases/latest/download/Audiochrome.zip`, release history → `releases`.
+
+```markdown
+Signed and notarized macOS build.
+
+- EQ editor groups filters by Both / Left / Right channel
+- Available EQs and Effects open when nothing is selected
+- Other Devices and an open device stay exclusive
+```
