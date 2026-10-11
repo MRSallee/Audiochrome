@@ -3,9 +3,9 @@ import Foundation
 enum DefaultEQProfiles {
     /// Bundled starter profiles copied into `~/Documents/Audiochrome/EQ profiles` on first launch.
     static var bundledURLs: [URL] {
-        // Prefer concrete filesystem paths — SPM `Bundle.module` points at
-        // `Audiochrome.app/Audiochrome_Audiochrome.bundle` (missing) or a debug build path,
-        // which is unreliable inside the packaged .app.
+        // Never touch SPM `Bundle.module` — its accessor fatals when
+        // `Audiochrome.app/Audiochrome_Audiochrome.bundle` is missing (the
+        // packaged-app case) or when the original build path is gone.
         let directories: [URL] = [
             Bundle.main.bundleURL
                 .appendingPathComponent("Contents/Resources/DefaultEQProfiles", isDirectory: true),
@@ -13,11 +13,21 @@ enum DefaultEQProfiles {
                 .appendingPathComponent("DefaultEQProfiles", isDirectory: true),
             Bundle.main.bundleURL
                 .appendingPathComponent(
+                    "Audiochrome_Audiochrome.bundle/DefaultEQProfiles",
+                    isDirectory: true
+                ),
+            Bundle.main.bundleURL
+                .appendingPathComponent(
                     "Contents/MacOS/Audiochrome_Audiochrome.bundle/DefaultEQProfiles",
                     isDirectory: true
                 ),
-            Bundle.module.bundleURL
-                .appendingPathComponent("DefaultEQProfiles", isDirectory: true),
+            URL(fileURLWithPath: CommandLine.arguments[0])
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+                .appendingPathComponent(
+                    "Audiochrome_Audiochrome.bundle/DefaultEQProfiles",
+                    isDirectory: true
+                ),
         ].compactMap { $0 }
 
         for directory in directories {
@@ -28,15 +38,9 @@ enum DefaultEQProfiles {
             }
         }
 
-        let bundleLookups: [[URL]] = [
-            Bundle.main.urls(forResourcesWithExtension: "txt", subdirectory: "DefaultEQProfiles") ?? [],
-            Bundle.module.urls(forResourcesWithExtension: "txt", subdirectory: "DefaultEQProfiles") ?? [],
-        ]
-        for urls in bundleLookups {
-            let existing = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
-            if !existing.isEmpty { return existing }
-        }
-        return []
+        let existing = (Bundle.main.urls(forResourcesWithExtension: "txt", subdirectory: "DefaultEQProfiles") ?? [])
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        return existing
     }
 
     private static func existingTxtURLs(in directory: URL) -> [URL]? {

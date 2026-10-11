@@ -23,33 +23,14 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BINARY" "$APP_DIR/Contents/MacOS/Audiochrome"
 
-# SPM looks for the resource bundle next to the executable.
-RESOURCE_BUNDLE_SRC="$PRODUCT_DIR/Audiochrome_Audiochrome.bundle"
-RESOURCE_BUNDLE_DST="$APP_DIR/Contents/MacOS/Audiochrome_Audiochrome.bundle"
-if [[ -d "$RESOURCE_BUNDLE_SRC" ]]; then
-  cp -R "$RESOURCE_BUNDLE_SRC" "$RESOURCE_BUNDLE_DST"
-  # Incomplete SPM bundles break `codesign --deep`; give it a minimal Info.plist.
-  if [[ ! -f "$RESOURCE_BUNDLE_DST/Info.plist" ]]; then
-    cat > "$RESOURCE_BUNDLE_DST/Info.plist" <<'BUNDLE_PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>CFBundleIdentifier</key>
-	<string>app.audiochrome.Audiochrome.resources</string>
-	<key>CFBundleName</key>
-	<string>Audiochrome_Audiochrome</string>
-	<key>CFBundlePackageType</key>
-	<string>BNDL</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-</dict>
-</plist>
-BUNDLE_PLIST
-  fi
-fi
+# Do not copy SPM's Audiochrome_Audiochrome.bundle into the .app:
+# - Next to Contents/ (what Bundle.module wants) is "unsealed contents" and
+#   codesign rejects it.
+# - Next to the binary is where 1.7.0 put it; Bundle.module still fatals.
+# Logo and starter profiles go in Contents/Resources; the app never calls
+# Bundle.module.
 
-# Also copy logo into Contents/Resources for Bundle.main lookups.
+# Copy logo into Contents/Resources for Bundle.main lookups.
 LOGO_SRC="$ROOT/Sources/Audiochrome/Resources/AudiochromeLogo.png"
 if [[ -f "$LOGO_SRC" ]]; then
   cp "$LOGO_SRC" "$APP_DIR/Contents/Resources/AudiochromeLogo.png"
@@ -86,9 +67,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.7.0</string>
+	<string>1.7.1</string>
 	<key>CFBundleVersion</key>
-	<string>40</string>
+	<string>41</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.2</string>
 	<key>LSUIElement</key>
@@ -115,11 +96,6 @@ fi
 sign_adhoc() {
   # Stable identifier matching CFBundleIdentifier — if the ID drifts
   # (Audiochrome-<hash>), UNUserNotificationCenter silently fails.
-  if [[ -d "${RESOURCE_BUNDLE_DST:-}" ]]; then
-    codesign --force --sign - \
-      --identifier "app.audiochrome.Audiochrome.resources" \
-      "$RESOURCE_BUNDLE_DST"
-  fi
   codesign --force --sign - \
     --identifier "app.audiochrome.Audiochrome" \
     "$APP_DIR/Contents/MacOS/Audiochrome"
@@ -137,11 +113,6 @@ sign_developer_id() {
     --sign "$identity"
     --entitlements "$ENTITLEMENTS"
   )
-  if [[ -d "${RESOURCE_BUNDLE_DST:-}" ]]; then
-    codesign "${deep_args[@]}" \
-      --identifier "app.audiochrome.Audiochrome.resources" \
-      "$RESOURCE_BUNDLE_DST"
-  fi
   codesign "${deep_args[@]}" \
     --identifier "app.audiochrome.Audiochrome" \
     "$APP_DIR/Contents/MacOS/Audiochrome"

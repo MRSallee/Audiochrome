@@ -28,13 +28,18 @@ struct AudiochromeBrandLockup: View {
         .accessibilityLabel(version.map { "Audiochrome \($0)" } ?? "Audiochrome")
     }
 
-    /// Prefer Contents/Resources (copied by package-app); SPM Bundle.module is a fallback.
+    /// Prefer Contents/Resources (copied by package-app). Do not use SPM
+    /// `Bundle.module` — it fatals if the resource bundle is not at the .app root.
     private static let logoImage: NSImage? = {
         let candidates: [URL?] = [
             Bundle.main.url(forResource: "AudiochromeLogo", withExtension: "png"),
-            Bundle.module.url(forResource: "AudiochromeLogo", withExtension: "png"),
+            Bundle.main.bundleURL
+                .appendingPathComponent("Audiochrome_Audiochrome.bundle/AudiochromeLogo.png"),
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents/MacOS/Audiochrome_Audiochrome.bundle/AudiochromeLogo.png"),
         ]
         for url in candidates.compactMap({ $0 }) {
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
             if let image = NSImage(contentsOf: url) {
                 image.isTemplate = true
                 return image
