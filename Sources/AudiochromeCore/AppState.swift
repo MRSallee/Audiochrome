@@ -682,7 +682,7 @@ public final class AppState: ObservableObject {
 
     public func beginCreateProfile(forIdentity identityKey: String) {
         let key = mappingIdentityKey(for: identityKey)
-        let color = colorHex(forProfile: "New Profile.txt", forIdentity: key)
+        let color = colorHex(forProfile: "New profile.txt", forIdentity: key)
         var draft = ProfileEditorDraft.create(identityKey: key, colorHex: color)
         draft.preampDB = autoPregainDB(for: draft)
         profileEditor = draft
@@ -850,6 +850,13 @@ public final class AppState: ObservableObject {
         isEQComparing = false
         objectWillChange.send()
         syncEngine()
+    }
+
+    /// Copy dropped `.txt` EQ profiles into the active output’s folder and activate the first one.
+    @discardableResult
+    public func importAndActivateDroppedProfiles(from urls: [URL]) -> Bool {
+        let key = activeMappingIdentityKey ?? AppConfig.allAudioIdentityKey
+        return importAndActivateProfiles(from: urls, forIdentity: key)
     }
 
     /// Copy dropped `.txt` EQ profiles into this output’s folder and activate the first one.

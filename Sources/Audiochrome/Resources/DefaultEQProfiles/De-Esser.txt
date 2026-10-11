@@ -1,2 +1,0 @@
-Preamp: 0 dB
-Filter 1: ON PK Fc 7500 Hz Gain -8 dB Q 2

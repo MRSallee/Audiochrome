@@ -93,7 +93,7 @@ struct SaturationEditorView: View {
             }
 
             detentRow(
-                title: "Even Harmonics",
+                title: "Even harmonics",
                 subtitle: settings.even.percentLabel,
                 stops: SaturationAmount.allCases,
                 labels: SaturationAmount.allCases.map(\.title),

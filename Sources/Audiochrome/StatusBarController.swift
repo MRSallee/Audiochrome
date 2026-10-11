@@ -57,6 +57,8 @@ final class StatusBarController: NSObject, ObservableObject {
                     self?.refreshIcon()
                 }
             }
+
+            installStatusItemProfileDrop(on: button)
         }
 
         installStatusItemClickMonitor()
@@ -99,6 +101,21 @@ final class StatusBarController: NSObject, ObservableObject {
                 self?.refreshIcon()
             }
         }
+    }
+
+    /// Finder → menu-bar icon drops (same import as the open menu).
+    private func installStatusItemProfileDrop(on button: NSStatusBarButton) {
+        let dropView = StatusItemProfileDropView(frame: button.bounds)
+        dropView.autoresizingMask = [.width, .height]
+        dropView.onDraggingHighlight = { [weak self] highlighted in
+            guard let self else { return }
+            if self.isPresented { return }
+            self.setStatusItemHighlighted(highlighted)
+        }
+        dropView.onImport = { [weak self] urls in
+            self?.appState.importAndActivateDroppedProfiles(from: urls) ?? false
+        }
+        button.addSubview(dropView)
     }
 
     /// Swallow status-item mouseDown so we fully own the selected highlight.
@@ -563,6 +580,59 @@ final class TopPinnedHostView: NSView {
         if hostingView.frame != next {
             hostingView.frame = next
         }
+    }
+}
+
+/// Transparent overlay on the status-item button so Finder `.txt` drops import EQ profiles.
+private final class StatusItemProfileDropView: NSView {
+    var onImport: (([URL]) -> Bool)?
+    var onDraggingHighlight: ((Bool) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let accepted = containsEQProfile(sender)
+        onDraggingHighlight?(accepted)
+        return accepted ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        containsEQProfile(sender) ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onDraggingHighlight?(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDraggingHighlight?(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        containsEQProfile(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDraggingHighlight?(false)
+        return onImport?(fileURLs(from: sender)) ?? false
+    }
+
+    private func containsEQProfile(_ sender: NSDraggingInfo) -> Bool {
+        fileURLs(from: sender).contains { ProfileStore.isEQProfileFile($0) }
+    }
+
+    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let pasteboard = sender.draggingPasteboard
+        return (pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]) ?? []
     }
 }
 

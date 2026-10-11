@@ -67,7 +67,7 @@ struct SettingsView: View {
 
             MenuGroupedSection {
                 settingsRow(
-                    title: "Open at Login",
+                    title: "Open at login",
                     isOn: Binding(
                         get: { appState.config.openAtLogin },
                         set: { appState.setOpenAtLogin($0) }
@@ -75,7 +75,7 @@ struct SettingsView: View {
                 )
                 Divider().padding(.horizontal, MenuChrome.dividerInset)
                 settingsRow(
-                    title: "Animated Menu Bar Icon",
+                    title: "Animated menu bar icon",
                     isOn: Binding(
                         get: { appState.config.animatedMenuBarIcon },
                         set: { appState.setAnimatedMenuBarIcon($0) }
@@ -83,7 +83,7 @@ struct SettingsView: View {
                 )
                 Divider().padding(.horizontal, MenuChrome.dividerInset)
                 settingsRow(
-                    title: "Active EQ Reminders",
+                    title: "Active EQ reminders",
                     isOn: Binding(
                         get: { appState.config.activeEQReminders },
                         set: { appState.setActiveEQReminders($0) }
@@ -141,7 +141,7 @@ struct SettingsView: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
-                title: "Manage Configuration",
+                title: "Manage configuration",
                 style: .disclosure,
                 trailing: manageConfigurationProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
@@ -276,7 +276,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var debugSettingsSection: some View {
-        Text("EQ Accuracy Debug")
+        Text("EQ accuracy debug")
             .font(MenuChrome.sectionFont)
             .foregroundStyle(.secondary)
             .padding(.horizontal, MenuChrome.contentInset)
@@ -284,7 +284,7 @@ struct SettingsView: View {
             .frame(height: MenuChrome.sectionRowHeight, alignment: .leading)
 
         settingsRow(
-            title: "Tap Drift Compensation",
+            title: "Tap drift compensation",
             subtitle: "Shipping default off. On can crush 19–20 kHz.",
             isOn: Binding(
                 get: { appState.config.debugAudio.tapDriftCompensation },
@@ -293,7 +293,7 @@ struct SettingsView: View {
         )
         Divider().padding(.horizontal, MenuChrome.dividerInset)
         settingsRow(
-            title: "Hold Tap When EQ Off",
+            title: "Hold tap when EQ off",
             subtitle: "Keeps passthrough path up during bypass sweeps.",
             isOn: Binding(
                 get: { appState.config.debugAudio.holdTapWhenBypassed },
@@ -314,7 +314,7 @@ struct SettingsView: View {
     private var sampleRateRow: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("EQ Design Sample Rate")
+                Text("EQ design sample rate")
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(.primary)
                 Text("Auto = device/aggregate. Override only redesigns filters.")

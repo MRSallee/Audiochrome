@@ -135,7 +135,7 @@ struct MenuBarView: View {
             }
 
             if appState.needsAudioPermission {
-                ControlCenterRow(title: "Quit & Relaunch", style: .command) {
+                ControlCenterRow(title: "Quit & relaunch", style: .command) {
                     appState.quitAndRelaunch()
                 }
             }
@@ -383,7 +383,7 @@ struct MenuBarView: View {
 
         return VStack(alignment: .leading, spacing: 0) {
             ControlCenterRow(
-                title: "Other Devices",
+                title: "Other devices",
                 style: .disclosure,
                 trailing: otherDevicesListProgress > 0.5 ? .chevronDown : .chevronRight
             ) {
@@ -1078,7 +1078,7 @@ private enum OutputEQPanelMetrics {
         height += MenuChrome.otherProfilesSectionVerticalPadding
         height += disclosureRowHeight // Available EQs header
         height += otherProfilesProgress * otherProfilesExpandedBodyHeight(profileCount: profiles.count)
-        if EffectsFeature.isEnabled, DeviceEffects.listedKinds.count > 0 {
+        if !DeviceEffects.listedKinds.isEmpty {
             height += MenuChrome.otherProfilesSectionVerticalPadding
             height += 1 // divider before Effects
         }
@@ -1143,7 +1143,7 @@ private struct OutputEQPanel: View {
 
             activeProfileSection
 
-            PlusCommandRow(title: "Create New EQ", action: openCreateEditor)
+            PlusCommandRow(title: "Create new EQ", action: openCreateEditor)
                 .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
                 .padding(.bottom, MenuChrome.otherProfilesSectionVerticalPadding)
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
@@ -1153,7 +1153,7 @@ private struct OutputEQPanel: View {
                 .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
                 .disabled(appState.needsAudioPermission)
 
-            if EffectsFeature.isEnabled, !DeviceEffects.listedKinds.isEmpty {
+            if !DeviceEffects.listedKinds.isEmpty {
                 Divider()
                     .padding(.horizontal, MenuChrome.dividerInset)
                     .padding(.top, MenuChrome.otherProfilesSectionVerticalPadding)
@@ -1285,7 +1285,7 @@ private struct OutputEQPanel: View {
                 .padding(.horizontal, MenuChrome.contentInset)
                 .frame(height: MenuChrome.iconRowHeight, alignment: .leading)
 
-            PermissionActionPillButton(title: "Privacy & Security Settings", showsExternalLink: true) {
+            PermissionActionPillButton(title: "Privacy & Security settings", showsExternalLink: true) {
                 appState.openAudioPermissionSettings()
             }
             .padding(.horizontal, MenuChrome.highlightInset)
@@ -1355,7 +1355,7 @@ private struct OutputEQPanel: View {
                 }
 
                 // Sticky under the scrolling list (Wi‑Fi–style).
-                ControlCenterRow(title: "Change Folder…", style: .command, leading: .folder) {
+                ControlCenterRow(title: "Change folder…", style: .command, leading: .folder) {
                     appState.chooseProfilesFolder(forIdentity: identityKey)
                 }
             }

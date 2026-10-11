@@ -79,7 +79,6 @@ extension AppState {
         forIdentity identityKey: String,
         _ mutate: (inout DeviceEffects) -> Void
     ) {
-        guard EffectsFeature.isEnabled else { return }
         let key = mappingIdentityKey(for: identityKey)
         var mapping = config.mapping(forIdentity: key)
         mutate(&mapping.effects)

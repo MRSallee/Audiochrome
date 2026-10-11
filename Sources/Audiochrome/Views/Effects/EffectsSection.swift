@@ -2,8 +2,7 @@ import AppKit
 import AudiochromeCore
 import SwiftUI
 
-/// Collapsible device-effects list. Delete this file with the rest of `Views/Effects`
-/// when the experiment is done.
+/// Collapsible device-effects list.
 enum EffectsSectionMetrics {
     static let rowSpacing: CGFloat = 2
 
@@ -18,7 +17,7 @@ enum EffectsSectionMetrics {
 
     @MainActor
     static func height(progress: CGFloat) -> CGFloat {
-        guard EffectsFeature.isEnabled, listedCount > 0 else { return 0 }
+        guard listedCount > 0 else { return 0 }
         return MenuChrome.otherProfilesSectionVerticalPadding
             + MenuChrome.sectionRowHeight
             + max(0, progress) * expandedBodyHeight()
@@ -41,7 +40,7 @@ struct EffectsSection: View {
     }
 
     var body: some View {
-        if EffectsFeature.isEnabled, !DeviceEffects.listedKinds.isEmpty {
+        if !DeviceEffects.listedKinds.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 ControlCenterRow(
                     title: "Effects",

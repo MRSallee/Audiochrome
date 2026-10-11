@@ -161,7 +161,7 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
     public func applyEffects(_ effects: DeviceEffects) {
         stateLock.lock()
         defer { stateLock.unlock() }
-        currentEffects = EffectsFeature.isEnabled ? effects : .off
+        currentEffects = effects
         effectsProcessor.update(effects: currentEffects, sampleRate: sampleRate)
     }
 

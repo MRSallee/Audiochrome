@@ -121,7 +121,7 @@ public struct KnownOutput: Codable, Equatable, Sendable, Identifiable {
 public struct AppConfig: Codable, Equatable, Sendable {
     /// Shared EQ slot when `customEQPerDevice` is off.
     public static let allAudioIdentityKey = "virtual:all-audio"
-    public static let allAudioDefaultName = "All Audio"
+    public static let allAudioDefaultName = "All audio"
     /// Flip to `true` to show Settings → EQ Accuracy Debug (drift, SR override, etc.).
     public static let showEQAccuracyDebugSettings = false
 

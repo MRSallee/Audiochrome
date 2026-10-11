@@ -200,7 +200,7 @@ struct SubharmonicEditorView: View {
 
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Timing Lock")
+                    Text("Timing lock")
                         .font(MenuChrome.bodyFont)
                         .foregroundStyle(.primary)
                         .lineLimit(1)

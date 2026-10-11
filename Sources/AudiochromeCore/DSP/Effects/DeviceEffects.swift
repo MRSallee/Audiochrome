@@ -38,7 +38,7 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
     public static let off = DeviceEffects()
 
     public var isAudible: Bool {
-        EffectsFeature.isEnabled && (saturation.enabled || crossfeed.enabled || subharmonic.enabled)
+        saturation.enabled || crossfeed.enabled || subharmonic.enabled
     }
 
     public var enabledDisplayNames: [String] {
@@ -46,8 +46,7 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
     }
 
     public var signature: String {
-        guard EffectsFeature.isEnabled else { return "off" }
-        return "sat:\(saturation.signature)|sh:\(subharmonic.signature)|xf:\(crossfeed.signature)"
+        "sat:\(saturation.signature)|sh:\(subharmonic.signature)|xf:\(crossfeed.signature)"
     }
 
     public func isEnabled(_ kind: EffectKind) -> Bool {
@@ -67,8 +66,7 @@ public struct DeviceEffects: Codable, Equatable, Sendable {
     }
 
     public static var listedKinds: [EffectKind] {
-        guard EffectsFeature.isEnabled else { return [] }
-        return EffectKind.allCases
+        EffectKind.allCases
     }
 }
 

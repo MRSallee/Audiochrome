@@ -65,7 +65,7 @@ final class SubharmonicProcessor: @unchecked Sendable {
     func update(settings: SubharmonicSettings, sampleRate: Double) {
         let rate = max(sampleRate, 1)
         var next = Params.bypassed
-        if EffectsFeature.isEnabled, settings.enabled {
+        if settings.enabled {
             next.enabled = true
             next.extractCoeff = 1.0 - exp(-2.0 * Double.pi * settings.range.extractHz / rate)
             next.subCoeff = 1.0 - exp(-2.0 * Double.pi * settings.range.subLowpassHz / rate)

@@ -8,11 +8,12 @@
 - Level-matched compare mode
 - Simple interface for creating and editing PEQ profiles
 - Import PEQ profiles from Squiglink and other tools
+- Drop EQ profiles on the menu or menu bar icon to add them
 - Support for separate left and right channel PEQ profiles
 - Saturation, crossfeed, and subharmonics effects
 - Disables cleanly. Doesn't touch system audio when Audiochrome is off
 
-**[Download Audiochrome](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** ([1.6.8 version history](https://github.com/MRSallee/Audiochrome/releases))
+**[Download Audiochrome](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** ([1.7.0 version history](https://github.com/MRSallee/Audiochrome/releases))
 
 ## Install
 

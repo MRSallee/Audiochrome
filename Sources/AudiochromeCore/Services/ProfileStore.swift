@@ -110,7 +110,7 @@ public final class ProfileStore: @unchecked Sendable {
 
     public static func sanitizedFilename(forDisplayName name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let base = trimmed.isEmpty ? "New Profile" : trimmed
+        let base = trimmed.isEmpty ? "New profile" : trimmed
         let safe = base
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")

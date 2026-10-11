@@ -264,7 +264,7 @@ struct ProfileEditorView: View {
                     .frame(height: scrollHeight)
                 }
 
-                PlusCommandRow(title: "Add Filter") {
+                PlusCommandRow(title: "Add filter") {
                     addFilter(to: channel)
                 }
                 .padding(.top, addPadding)

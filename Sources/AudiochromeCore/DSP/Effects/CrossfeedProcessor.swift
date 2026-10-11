@@ -39,7 +39,7 @@ final class CrossfeedProcessor: @unchecked Sendable {
     func update(settings: CrossfeedSettings, sampleRate: Double) {
         let rate = max(sampleRate, 1)
         var next = Params.bypassed
-        if EffectsFeature.isEnabled, settings.enabled {
+        if settings.enabled {
             next.enabled = true
             next.lpfCoeff = 1.0 - exp(-2.0 * Double.pi * settings.range.cutoffHz / rate)
             next.mix = settings.bleed.mix

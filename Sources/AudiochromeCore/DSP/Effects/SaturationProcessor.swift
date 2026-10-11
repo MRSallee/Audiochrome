@@ -70,7 +70,7 @@ final class SaturationProcessor: @unchecked Sendable {
     func update(settings: SaturationSettings, sampleRate: Double) {
         let rate = max(sampleRate, 1)
         var next = Params.bypassed
-        if EffectsFeature.isEnabled, settings.enabled {
+        if settings.enabled {
             next.enabled = true
             next.evenAmt = settings.even.evenMix
             next.oddAmt = settings.odd.oddMix

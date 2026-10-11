@@ -136,7 +136,7 @@ public struct EQProfile: Equatable, Sendable {
     }
 
     /// Default new-profile curve: one peaking band at 1 kHz / 0 dB / Q 1.
-    public static func makeNew(name: String = "New Profile") -> EQProfile {
+    public static func makeNew(name: String = "New profile") -> EQProfile {
         EQProfile(
             name: name,
             linked: ChannelEQ(

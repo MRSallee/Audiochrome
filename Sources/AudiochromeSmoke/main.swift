@@ -72,7 +72,7 @@ struct SmokeMain {
         check("writer round-trip Fc", roundTrip.linked?.filters.first?.frequencyHz == 31)
 
         let fresh = EQProfile.makeNew()
-        check("new profile name", fresh.name == "New Profile")
+        check("new profile name", fresh.name == "New profile")
         check("new profile one PK", fresh.linked?.filters.count == 1 && fresh.linked?.filters.first?.kind == .peaking)
         check("new profile Q 1", fresh.linked?.filters.first?.q == 1)
         check("new profile 1 kHz", fresh.linked?.filters.first?.frequencyHz == 1_000)

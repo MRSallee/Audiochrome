@@ -1,3 +1,0 @@
-Preamp: -0.9413 dB
-Filter 1: ON PK Fc 3000 Hz Gain -5 dB Q 0.8
-Filter 2: ON PK Fc 300 Hz Gain 1 dB Q 0.2

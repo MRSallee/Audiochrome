@@ -13,15 +13,9 @@ public final class EffectsProcessor: @unchecked Sendable {
 
     public func update(effects: DeviceEffects, sampleRate: Double) {
         limiter.update(sampleRate: sampleRate)
-        if EffectsFeature.isEnabled {
-            saturation.update(settings: effects.saturation, sampleRate: sampleRate)
-            subharmonic.update(settings: effects.subharmonic, sampleRate: sampleRate)
-            crossfeed.update(settings: effects.crossfeed, sampleRate: sampleRate)
-        } else {
-            saturation.clear()
-            subharmonic.clear()
-            crossfeed.clear()
-        }
+        saturation.update(settings: effects.saturation, sampleRate: sampleRate)
+        subharmonic.update(settings: effects.subharmonic, sampleRate: sampleRate)
+        crossfeed.update(settings: effects.crossfeed, sampleRate: sampleRate)
     }
 
     public func clear() {
@@ -37,11 +31,9 @@ public final class EffectsProcessor: @unchecked Sendable {
         right: UnsafeMutablePointer<Float>,
         frames: Int
     ) {
-        if EffectsFeature.isEnabled {
-            saturation.processPlanar(left: left, right: right, frames: frames)
-            subharmonic.processPlanar(left: left, right: right, frames: frames)
-            crossfeed.processPlanar(left: left, right: right, frames: frames)
-        }
+        saturation.processPlanar(left: left, right: right, frames: frames)
+        subharmonic.processPlanar(left: left, right: right, frames: frames)
+        crossfeed.processPlanar(left: left, right: right, frames: frames)
         limiter.processPlanar(left: left, right: right, frames: frames)
     }
 
@@ -51,11 +43,9 @@ public final class EffectsProcessor: @unchecked Sendable {
         frames: Int,
         channels: Int
     ) {
-        if EffectsFeature.isEnabled {
-            saturation.processInterleaved(buffer, frames: frames, channels: channels)
-            subharmonic.processInterleaved(buffer, frames: frames, channels: channels)
-            crossfeed.processInterleaved(buffer, frames: frames, channels: channels)
-        }
+        saturation.processInterleaved(buffer, frames: frames, channels: channels)
+        subharmonic.processInterleaved(buffer, frames: frames, channels: channels)
+        crossfeed.processInterleaved(buffer, frames: frames, channels: channels)
         limiter.processInterleaved(buffer, frames: frames, channels: channels)
     }
 
