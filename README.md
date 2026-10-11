@@ -12,9 +12,11 @@ macOS menu bar app for system-wide EQ, with per-output profile mapping.
 ## Requirements
 
 - macOS 14.2+
-- Swift 5.9+ / Xcode Command Line Tools (full Xcode optional)
+- **System Audio Recording** access when prompted (to process system audio)
 
-## Build & run
+Building from source also needs Swift 5.9+ and Xcode Command Line Tools (full Xcode optional).
+
+## Build from source
 
 ```bash
 # Parser / device smoke checks (no full Xcode / XCTest required)
