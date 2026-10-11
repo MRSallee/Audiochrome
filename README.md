@@ -80,3 +80,11 @@ Supported profile shapes:
 | `ProcessTapAudioEngine` | System-wide EQ via process tap + aggregate replay |
 | `EQProcessor` | Parametric biquads (Squiglink / APO), L/R + preamp |
 | `StubAudioEngine` | Fallback when process tap is unavailable |
+
+## License
+
+Source is published under the [PolyForm Noncommercial License 1.0.0](LICENSE) so you can use and inspect it for non-commercial purposes. Commercial use needs permission.
+
+This is not a community project. The repo is provided as-is; I’m not looking for contributors.
+
+**Audiochrome** and its logo are trademarks. Forks and redistributions may not use the name or marks in a way that implies they are the official project.
