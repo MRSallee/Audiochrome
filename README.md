@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Sources/Audiochrome/Resources/AudiochromeLogo.png" alt="Audiochrome" width="320">
+  <img src="docs/Audiochrome-cover.png" alt="Audiochrome">
 </p>
 
 macOS menu bar app for system-wide EQ, with per-output profile mapping.
