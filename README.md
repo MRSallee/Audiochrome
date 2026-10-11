@@ -2,7 +2,15 @@
   <img src="docs/Audiochrome-cover.png" alt="Audiochrome">
 </p>
 
-macOS menu bar app for system-wide EQ, with per-output profile mapping.
+- Lightweight system-wide parametric EQ for macOS
+- Active EQ reminders. Never accidentally use EQ when you don't want to
+- Per-device PEQ profile mapping
+- Level-matched compare mode
+- Simple interface for creating and editing PEQ profiles
+- Import PEQ profiles from Squiglink and other tools
+- Support for separate left and right channel PEQ profiles
+- Saturation, crossfeed, and subharmonics effects
+- Disables cleanly. Doesn't touch system audio when Audiochrome is off
 
 **[Download](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** the signed, notarized app (macOS 14.2+).
 
