@@ -5,12 +5,38 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CONFIG="${1:-debug}"
+# Release zips are universal. Debug stays native unless UNIVERSAL=1.
+if [[ "$CONFIG" == "release" ]]; then
+  UNIVERSAL="${UNIVERSAL:-1}"
+else
+  UNIVERSAL="${UNIVERSAL:-0}"
+fi
+if [[ "${2:-}" == "universal" ]]; then
+  UNIVERSAL=1
+elif [[ "${2:-}" == "native" ]]; then
+  UNIVERSAL=0
+fi
 PRODUCT_DIR="$ROOT/.build/$CONFIG"
 APP_DIR="$ROOT/.build/Audiochrome.app"
 BINARY="$PRODUCT_DIR/Audiochrome"
 
-echo "Building Audiochrome ($CONFIG)…"
-swift build -c "$CONFIG" --product Audiochrome
+if [[ "$UNIVERSAL" == "1" ]]; then
+  echo "Building Audiochrome ($CONFIG, universal arm64 + x86_64)…"
+  swift build -c "$CONFIG" --arch arm64 --product Audiochrome
+  swift build -c "$CONFIG" --arch x86_64 --product Audiochrome
+  ARM_BIN="$ROOT/.build/arm64-apple-macosx/$CONFIG/Audiochrome"
+  X86_BIN="$ROOT/.build/x86_64-apple-macosx/$CONFIG/Audiochrome"
+  if [[ ! -x "$ARM_BIN" || ! -x "$X86_BIN" ]]; then
+    echo "error: expected arch slices at $ARM_BIN and $X86_BIN" >&2
+    exit 1
+  fi
+  mkdir -p "$PRODUCT_DIR"
+  lipo -create "$ARM_BIN" "$X86_BIN" -output "$BINARY"
+  lipo -info "$BINARY"
+else
+  echo "Building Audiochrome ($CONFIG)…"
+  swift build -c "$CONFIG" --product Audiochrome
+fi
 
 if [[ ! -x "$BINARY" ]]; then
   echo "error: expected binary at $BINARY" >&2
@@ -67,9 +93,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.7.1</string>
+	<string>1.7.2</string>
 	<key>CFBundleVersion</key>
-	<string>41</string>
+	<string>42</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.2</string>
 	<key>LSUIElement</key>

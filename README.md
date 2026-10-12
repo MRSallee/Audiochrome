@@ -12,7 +12,7 @@
 - Saturation, crossfeed, and subharmonics effects
 - Disables cleanly. Doesn't touch system audio when Audiochrome is off
 
-**[Download Audiochrome](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** ([1.7.1 version history](https://github.com/MRSallee/Audiochrome/releases))
+**[Download Audiochrome](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** ([1.7.2 version history](https://github.com/MRSallee/Audiochrome/releases))
 
 ## Install
 
@@ -24,7 +24,7 @@
 
 ## Requirements
 
-- macOS 14.2+
+- macOS 14.2+ (Apple Silicon or Intel)
 - **System Audio Recording** access when prompted (to process system audio)
 
 Building from source also needs Swift 5.9+ and Xcode Command Line Tools (full Xcode optional).
