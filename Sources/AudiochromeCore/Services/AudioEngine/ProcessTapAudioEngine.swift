@@ -407,11 +407,21 @@ public final class ProcessTapAudioEngine: AudioEngine, @unchecked Sendable {
             UnsafeMutablePointer(mutating: inInputData)
         )
 
-        // Copy tap → output first.
+        // Copy tap → output. Combo USB can prepend leftover input (mic) buffers — skip them.
+        var inOffset = 0
+        if inBuffers.count > outBuffers.count, let firstOut = outBuffers.first {
+            let extra = inBuffers.count - outBuffers.count
+            if inBuffers[0].mNumberChannels != firstOut.mNumberChannels,
+               extra < inBuffers.count,
+               inBuffers[extra].mNumberChannels == firstOut.mNumberChannels {
+                inOffset = extra
+            }
+        }
         for (index, outBuffer) in outBuffers.enumerated() {
             guard let outPtr = outBuffer.mData else { continue }
-            if index < inBuffers.count, let inPtr = inBuffers[index].mData {
-                let copyBytes = min(outBuffer.mDataByteSize, inBuffers[index].mDataByteSize)
+            let inIndex = inOffset + index
+            if inIndex < inBuffers.count, let inPtr = inBuffers[inIndex].mData {
+                let copyBytes = min(outBuffer.mDataByteSize, inBuffers[inIndex].mDataByteSize)
                 memcpy(outPtr, inPtr, Int(copyBytes))
                 if copyBytes < outBuffer.mDataByteSize {
                     memset(outPtr.advanced(by: Int(copyBytes)), 0, Int(outBuffer.mDataByteSize - copyBytes))
