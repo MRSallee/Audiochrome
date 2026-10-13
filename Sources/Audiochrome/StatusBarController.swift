@@ -430,11 +430,12 @@ final class StatusBarController: NSObject, ObservableObject {
 
         guard let anchor else {
             let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let height = min(size.height, MenuMetrics.maxPanelHeight())
             return NSRect(
                 x: visible.maxX - size.width - margin,
-                y: visible.maxY - size.height - gap,
+                y: visible.maxY - height - gap,
                 width: size.width,
-                height: size.height
+                height: height
             )
         }
 
@@ -452,8 +453,13 @@ final class StatusBarController: NSObject, ObservableObject {
             x = visible.maxX - size.width - margin
         }
         // Leave a small gap under the menu bar, matching Wi‑Fi / Control Center.
-        let y = anchor.minY - size.height - gap
-        return NSRect(x: x, y: y, width: size.width, height: size.height)
+        let available = max(
+            MenuMetrics.minMeasuredHeight,
+            (anchor.minY - gap) - (visible.minY + margin)
+        )
+        let height = min(size.height, available)
+        let y = anchor.minY - height - gap
+        return NSRect(x: x, y: y, width: size.width, height: height)
     }
 
     private func statusItemScreenRect() -> NSRect? {
@@ -858,7 +864,7 @@ enum StatusIconImage {
     }
 }
 
-private enum MenuMetrics {
+enum MenuMetrics {
     static let width: CGFloat = 320
     /// Control Center / Wi‑Fi panels use 16; default windows use 10.
     static let cornerRadius: CGFloat = 16
@@ -872,6 +878,16 @@ private enum MenuMetrics {
     static let screenMargin: CGFloat = 8
     /// Gap between menu-bar bottom and panel top (matches system extras).
     static let menuBarGap: CGFloat = 5
+
+    /// Tallest panel that still fits under the menu bar on the screen under the pointer.
+    static func maxPanelHeight() -> CGFloat {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        return max(minMeasuredHeight, floor(visible.height - menuBarGap - screenMargin))
+    }
 }
 
 /// Full-panel destinations that replace the core menu in the same window.
@@ -1069,7 +1085,7 @@ final class PopoverChrome: ObservableObject {
     /// SwiftUI publishes its laid-out height once per change, at the start of the
     /// animation, so this is where the matching window animation is kicked off.
     func reportMeasuredHeight(_ height: CGFloat, for screen: MenuPanelScreen) {
-        let h = ceil(height)
+        let h = min(ceil(height), MenuMetrics.maxPanelHeight())
         guard h >= MenuMetrics.minMeasuredHeight else { return }
         heightByScreen[screen] = h
         guard screen == presentedScreen else { return }

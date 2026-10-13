@@ -718,10 +718,7 @@ public final class AppState: ObservableObject {
             || previous.hiddenFilters != draft.hiddenFilters
             || previous.hiddenLeftFilters != draft.hiddenLeftFilters
             || previous.hiddenRightFilters != draft.hiddenRightFilters
-        if previous.preampDB != draft.preampDB, previous.isAutoPregain {
-            draft.isAutoPregain = false
-        }
-        if draft.isAutoPregain, bandsChanged || !previous.isAutoPregain {
+        if bandsChanged {
             draft.preampDB = autoPregainDB(for: draft)
         }
         let affectsLiveEQ =

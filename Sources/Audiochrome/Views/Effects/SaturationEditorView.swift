@@ -70,7 +70,7 @@ struct SaturationEditorView: View {
                 .padding(.top, MenuChrome.contentInset)
                 .padding(.bottom, MenuChrome.waveformSpacing)
 
-                Text("Preset")
+                Text("Presets")
                     .font(MenuChrome.sectionFont)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

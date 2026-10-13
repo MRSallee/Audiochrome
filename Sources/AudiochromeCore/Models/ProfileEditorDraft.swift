@@ -39,8 +39,6 @@ public struct ProfileEditorDraft: Equatable, Sendable {
     public var hiddenLeftFilters: [EQFilter]
     public var hiddenRightFilters: [EQFilter]
     public var expandedBandID: UUID?
-    /// When true, pregain is recalculated whenever filters change.
-    public var isAutoPregain: Bool
     public var revision: Int
 
     public var allEditorBands: [ProfileEditorBand] {
@@ -75,7 +73,6 @@ public struct ProfileEditorDraft: Equatable, Sendable {
             hiddenLeftFilters: [],
             hiddenRightFilters: [],
             expandedBandID: bands.first?.id,
-            isAutoPregain: true,
             revision: 0
         )
     }
@@ -105,7 +102,6 @@ public struct ProfileEditorDraft: Equatable, Sendable {
             hiddenLeftFilters: left.hidden,
             hiddenRightFilters: right.hidden,
             expandedBandID: nil,
-            isAutoPregain: true,
             revision: 0
         )
     }

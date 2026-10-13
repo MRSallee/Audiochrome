@@ -28,6 +28,8 @@ struct MenuBarView: View {
     @State private var otherDevicesListProgress: CGFloat = 0
 
     @State private var colorPickerIdentityKey: String?
+    /// Intrinsic height of the scrollable column (devices + EQ), before the screen cap.
+    @State private var scrollableHeight: CGFloat = 0
     @State private var renamingIdentityKey: String?
     @State private var renameText = ""
     /// Bumped each rename so the AppKit field remounts and reclaims first responder.
@@ -85,7 +87,7 @@ struct MenuBarView: View {
         return expandedOtherDeviceKey == last.identityKey && otherDevicePanelProgress > 0.5
     }
 
-    var body: some View {
+    private var scrollableColumn: some View {
         VStack(alignment: .leading, spacing: 0) {
             activeOutputHeader
 
@@ -121,12 +123,60 @@ struct MenuBarView: View {
                 } else if !otherDevices.isEmpty, !isLastOtherDeviceExpanded {
                     Divider().padding(.horizontal, MenuChrome.dividerInset)
                 }
-
-                ControlCenterRow(title: "Settings…", style: .command) {
-                    popoverChrome.present(.settings)
-                }
-                .padding(.top, MenuChrome.waveformSpacing)
             }
+            .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
+            .disabled(appState.needsAudioPermission)
+        }
+    }
+
+    private var scrollableHeightReader: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(key: HomeScrollableHeightKey.self, value: proxy.size.height)
+        }
+    }
+
+    private var footerHeight: CGFloat {
+        var height = MenuChrome.waveformSpacing + MenuChrome.iconRowHeight
+        height += MenuChrome.iconRowHeight
+        if appState.needsAudioPermission {
+            height += MenuChrome.iconRowHeight
+        }
+        height += MenuChrome.menuPadding
+        return height
+    }
+
+    private var maxScrollableHeight: CGFloat {
+        max(MenuMetrics.minMeasuredHeight, MenuMetrics.maxPanelHeight() - footerHeight)
+    }
+
+    private var shouldScrollHome: Bool {
+        scrollableHeight > maxScrollableHeight + 0.5
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if shouldScrollHome {
+                    ScrollViewport(showsIndicators: true) {
+                        scrollableColumn
+                            .background { scrollableHeightReader }
+                    }
+                    .frame(height: maxScrollableHeight)
+                    .scrollBounceBehavior(.basedOnSize)
+                } else {
+                    scrollableColumn
+                        .background { scrollableHeightReader }
+                }
+            }
+
+            if shouldScrollHome {
+                Divider().padding(.horizontal, MenuChrome.dividerInset)
+            }
+
+            ControlCenterRow(title: "Settings…", style: .command) {
+                popoverChrome.present(.settings)
+            }
+            .padding(.top, MenuChrome.waveformSpacing)
             .opacity(appState.needsAudioPermission ? MenuChrome.permissionLockedOpacity : 1)
             .disabled(appState.needsAudioPermission)
 
@@ -142,6 +192,7 @@ struct MenuBarView: View {
         }
         .padding(.bottom, MenuChrome.menuPadding)
         .frame(maxWidth: .infinity, alignment: .top)
+        .onPreferenceChange(HomeScrollableHeightKey.self) { scrollableHeight = $0 }
         .focusEffectDisabled()
         .background {
             RenameOutsideClickMonitor(enabled: renameOutsideClicksEnabled) {
@@ -910,6 +961,13 @@ private struct RenameOutsideClickMonitor: NSViewRepresentable {
             }
             return false
         }
+    }
+}
+
+private struct HomeScrollableHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
