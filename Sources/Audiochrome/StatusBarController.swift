@@ -907,6 +907,8 @@ final class PopoverChrome: ObservableObject {
     private var overlayUnmountTask: Task<Void, Never>?
     /// True while `animator().setFrame` is interpolating — `applyHeight` must not snap.
     private var heightAnimationInFlight = false
+    /// Latest measured height that arrived while a window animation was in flight.
+    private var queuedHeight: CGFloat?
 
     func attach(_ panel: StatusMenuPanel, anchoredFrame: @escaping (NSSize) -> NSRect) {
         self.panel = panel
@@ -1054,9 +1056,13 @@ final class PopoverChrome: ObservableObject {
             changes()
         }
         // Nothing to animate to if the layout height did not actually change.
+        // After the animation, apply the last measured height in case an earlier
+        // (too-short) report won and later reports were queued or dropped.
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Self.disclosureDuration + 0.1))
-            self?.expectsAnimatedHeight = false
+            try? await Task.sleep(for: .seconds(Self.disclosureDuration + 0.12))
+            guard let self else { return }
+            self.expectsAnimatedHeight = false
+            self.syncToMeasuredHeight()
         }
     }
 
@@ -1072,7 +1078,10 @@ final class PopoverChrome: ObservableObject {
 
         if expectsAnimatedHeight {
             expectsAnimatedHeight = false
+            queuedHeight = nil
             animateHeight(to: h)
+        } else if heightAnimationInFlight {
+            queuedHeight = h
         } else {
             applyHeight(h, reanchor: false)
         }
@@ -1105,7 +1114,14 @@ final class PopoverChrome: ObservableObject {
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak self, weak panel] in
             Task { @MainActor in
-                self?.heightAnimationInFlight = false
+                guard let self else { return }
+                self.heightAnimationInFlight = false
+                if let queued = self.queuedHeight {
+                    self.queuedHeight = nil
+                    if abs(queued - height) > 0.5 {
+                        self.applyHeight(queued, reanchor: false)
+                    }
+                }
                 panel?.pinHostingToTop()
                 panel?.invalidateShadow()
             }
@@ -1140,10 +1156,15 @@ final class PopoverChrome: ObservableObject {
         panel.invalidateShadow()
     }
 
-    /// Grow/shrink downward from the current top edge (disclosure animation).
+    /// Grow/shrink downward from the status-item anchor. Using the current panel
+    /// top lets a B↔C list change accumulate vertical drift.
     private func topPinnedFrame(for height: CGFloat) -> NSRect? {
-        guard let panel else { return nil }
         let newHeight = max(MenuMetrics.minMeasuredHeight, height)
+        let size = NSSize(width: MenuMetrics.width, height: newHeight)
+        if let anchored = anchoredFrame?(size) {
+            return anchored
+        }
+        guard let panel else { return nil }
         var frame = panel.frame
         guard abs(frame.height - newHeight) > 0.25 || abs(frame.width - MenuMetrics.width) > 0.25 else {
             return nil

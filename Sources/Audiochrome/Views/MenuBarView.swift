@@ -251,7 +251,9 @@ struct MenuBarView: View {
                     ? .constant(false)
                     : Binding(
                         get: { mapping.enabled },
-                        set: { appState.setEnabled(forIdentity: device.identityKey, enabled: $0) }
+                        set: { enabled in
+                            setDeviceEQEnabled(device, enabled: enabled)
+                        }
                     )
                 )
                 .labelsHidden()
@@ -391,6 +393,7 @@ struct MenuBarView: View {
                 popoverChrome.animatingDisclosure {
                     otherDevicesListProgress = opening ? 1 : 0
                     if opening {
+                        unpinInactiveOtherDevices()
                         activePanelProgress = 0
                         activeOtherProfilesProgress = 0
                         activeEffectsProgress = 0
@@ -434,18 +437,8 @@ struct MenuBarView: View {
     }
 
     private func selectUnlistedDevice(_ device: AudioOutputDevice) {
-        if otherDevicesListProgress > 0.01 {
-            popoverChrome.animatingDisclosure {
-                otherDevicesListProgress = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + PopoverChrome.disclosureDuration) {
-                pinnedOtherDeviceKeys.insert(device.identityKey)
-                focusOtherDevice(device, animated: true)
-            }
-        } else {
-            pinnedOtherDeviceKeys.insert(device.identityKey)
-            focusOtherDevice(device, animated: true)
-        }
+        pinInspectedOtherDevice(device.identityKey)
+        focusOtherDevice(device, animated: true)
     }
 
     private func otherDeviceHeader(
@@ -477,8 +470,37 @@ struct MenuBarView: View {
         focusOtherDevice(device, animated: true)
     }
 
+    /// B↔C list membership (main list vs Other devices) has to animate and re-anchor
+    /// or the panel lands short and dropped below the status item.
+    private func setDeviceEQEnabled(_ device: AudioOutputDevice, enabled: Bool) {
+        let isActive = device.identityKey == activeDevice?.identityKey
+        if !isActive, !enabled, expandedOtherDeviceKey == device.identityKey {
+            pinInspectedOtherDevice(device.identityKey)
+        }
+        if isActive {
+            appState.setEnabled(forIdentity: device.identityKey, enabled: enabled)
+        } else {
+            popoverChrome.animatingDisclosure {
+                appState.setEnabled(forIdentity: device.identityKey, enabled: enabled)
+            }
+        }
+    }
+
+    /// Keep EQ-enabled others in the main list; only one inspected (EQ-off) pin at a time.
+    private func pinInspectedOtherDevice(_ key: String) {
+        unpinInactiveOtherDevices()
+        pinnedOtherDeviceKeys.insert(key)
+    }
+
+    private func unpinInactiveOtherDevices() {
+        pinnedOtherDeviceKeys = Set(pinnedOtherDeviceKeys.filter {
+            appState.shouldListInactiveOutput($0)
+        })
+    }
+
     private func focusOtherDevice(_ device: AudioOutputDevice, animated: Bool) {
         let key = device.identityKey
+        pinInspectedOtherDevice(key)
         let effects = preferredEffectsProgress(for: key)
         if animated {
             popoverChrome.animatingDisclosure {
@@ -516,6 +538,7 @@ struct MenuBarView: View {
         let effects = activeKey.map { preferredEffectsProgress(for: $0) } ?? 0
         if animated {
             popoverChrome.animatingDisclosure {
+                unpinInactiveOtherDevices()
                 otherDevicesListProgress = 0
                 activePanelProgress = 1
                 activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
@@ -534,6 +557,7 @@ struct MenuBarView: View {
                 }
             }
         } else {
+            unpinInactiveOtherDevices()
             otherDevicesListProgress = 0
             activePanelProgress = 1
             activeOtherProfilesProgress = activeKey.map { preferredOtherProfilesProgress(for: $0) } ?? 1
@@ -1008,9 +1032,8 @@ private enum OutputEQPanelMetrics {
     static let maxVisibleOtherProfileRows = 7
 
     /// “Active EQ” header + row + waveform (flat when no EQ is on).
-    static func activeProfileBlockHeight(hasProfile: Bool = true) -> CGFloat {
-        _ = hasProfile
-        return MenuChrome.sectionTopPadding
+    static func activeProfileBlockHeight() -> CGFloat {
+        MenuChrome.sectionTopPadding
             + MenuChrome.sectionRowHeight
             + iconRowHeight
             + MenuChrome.waveformSpacing
@@ -1057,9 +1080,7 @@ private enum OutputEQPanelMetrics {
         effectsProgress: CGFloat,
         showsLeadingDivider: Bool
     ) -> CGFloat {
-        let mapping = appState.config.mapping(forIdentity: identityKey)
         let profiles = appState.profiles(forIdentity: identityKey)
-        let hasProfile = mapping.profileFilename != nil
 
         var height: CGFloat = 0
         if showsLeadingDivider {
@@ -1070,7 +1091,7 @@ private enum OutputEQPanelMetrics {
            identityKey == appState.activeMappingIdentityKey {
             height += audioPermissionBlockHeight()
         } else {
-            height += activeProfileBlockHeight(hasProfile: hasProfile)
+            height += activeProfileBlockHeight()
         }
 
         height += MenuChrome.otherProfilesSectionVerticalPadding
@@ -1205,7 +1226,7 @@ private struct OutputEQPanel: View {
                         alignment: .top
                     )
             } else {
-                let blockHeight = OutputEQPanelMetrics.activeProfileBlockHeight(hasProfile: hasProfile)
+                let blockHeight = OutputEQPanelMetrics.activeProfileBlockHeight()
                 VStack(alignment: .leading, spacing: 0) {
                     Text("Active EQ")
                         .font(MenuChrome.sectionFont)
