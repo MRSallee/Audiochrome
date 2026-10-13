@@ -326,27 +326,35 @@ final class StatusBarController: NSObject, ObservableObject {
         let button = statusItem?.button
         let animate = appState.isEQEngaged && appState.config.animatedMenuBarIcon
         let hex = appState.activeProfileColorHex
-        // Profile → color plate. Effects only → white plate, dark bars.
-        // Idle → inverted (dark plate, white bars) so it doesn’t match effects-only.
+        // Profile → color plate. Effects only → filled plate opposite the menu bar.
+        // Idle → template so the system tints it like Wi‑Fi / Control Center.
         let paint = hex.map { ProfileColorPalette.nsColor($0, role: .ui, dark: false) }
+        let menuBarDark = isMenuBarDark(button)
+        let effectsPlate = menuBarDark ? NSColor.white : NSColor.black
         let bands = animate
             ? appState.audioEngine.spectrumLevels.map { CGFloat($0) }
             : []
         let presence = animate ? CGFloat(appState.audioEngine.outputLevel) : 0
         updateRestExpand(animate: animate, presence: presence)
         button?.image = StatusIconImage.make(
-            color: paint ?? .white,
+            color: paint ?? effectsPlate,
             barInk: hex.map { ProfileColorPalette.barInk(for: $0) },
             isEngaged: appState.isEQEngaged,
             bands: bands,
             presence: presence,
             restExpand: restExpand,
-            animated: animate
+            animated: animate,
+            isTemplate: !appState.isEQEngaged
         )
         // Image updates can wipe highlight drawing — re-assert while menu is open.
         if isPresented {
             setStatusItemHighlighted(true)
         }
+    }
+
+    private func isMenuBarDark(_ button: NSStatusBarButton?) -> Bool {
+        let appearance = button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     // MARK: - Present / dismiss
@@ -670,6 +678,7 @@ enum StatusIconImage {
         presence: CGFloat = 0,
         restExpand: CGFloat = 1,
         animated: Bool = false,
+        isTemplate: Bool = false,
         size: CGFloat = 18
     ) -> NSImage {
         let sizeValue = NSSize(width: size, height: size)
@@ -725,11 +734,11 @@ enum StatusIconImage {
                 )
             }
         } else {
-            NSColor.white.setStroke()
+            NSColor.black.setStroke()
             let ring = NSBezierPath(ovalIn: plateRect)
             ring.lineWidth = 1
             ring.stroke()
-            NSColor.white.setFill()
+            NSColor.black.setFill()
             Self.fillSpectrumBars(
                 center: center,
                 bands: [],
@@ -739,7 +748,7 @@ enum StatusIconImage {
         }
 
         NSGraphicsContext.restoreGraphicsState()
-        image.isTemplate = false
+        image.isTemplate = isTemplate
         return image
     }
 
