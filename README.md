@@ -12,6 +12,25 @@
 - Saturation, crossfeed, and subharmonics effects
 - Disables cleanly. Doesn't touch system audio when Audiochrome is off
 
+<p align="center">
+  <img src="docs/menubar.png" alt="Audiochrome in the menu bar" width="420">
+</p>
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/menu.png" alt="Audiochrome menu" width="280">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <img src="docs/editor.png" alt="EQ editor" width="280">
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/reminder.png" alt="Active EQ reminder" width="420">
+</p>
+
 **[Download Audiochrome](https://github.com/MRSallee/Audiochrome/releases/latest/download/Audiochrome.zip)** ([1.7.3 version history](https://github.com/MRSallee/Audiochrome/releases))
 
 ## Install
