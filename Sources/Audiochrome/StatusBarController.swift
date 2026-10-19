@@ -216,26 +216,17 @@ final class StatusBarController: NSObject, ObservableObject {
         contentRoot.hostingView = hosting.view
         panel.hostView = contentRoot
 
-        if #available(macOS 26.0, *) {
-            // Stock Wi‑Fi / Sound use Liquid Glass on macOS 26+.
-            let glass = NSGlassEffectView(frame: frame)
-            glass.cornerRadius = MenuMetrics.cornerRadius
-            glass.style = .regular
-            glass.clipsToBounds = true
-            glass.autoresizingMask = [.width, .height]
-            glass.contentView = contentRoot
-            panel.contentView = glass
-        } else {
-            let effect = NSVisualEffectView(frame: frame)
-            effect.material = .popover
-            effect.blendingMode = .behindWindow
-            effect.state = .active
-            effect.clipsToBounds = true
-            effect.maskImage = Self.roundedMaskImage(cornerRadius: MenuMetrics.cornerRadius)
-            effect.autoresizingMask = [.width, .height]
-            effect.addSubview(contentRoot)
-            panel.contentView = effect
-        }
+        // `.menu` is what Wi‑Fi / Control Center use. On macOS 26 the system
+        // paints it as Liquid Glass without the card stroke NSGlassEffectView adds.
+        let effect = NSVisualEffectView(frame: frame)
+        effect.material = .menu
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.clipsToBounds = true
+        effect.maskImage = Self.roundedMaskImage(cornerRadius: MenuMetrics.cornerRadius)
+        effect.autoresizingMask = [.width, .height]
+        effect.addSubview(contentRoot)
+        panel.contentView = effect
 
         panel.minSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.minMeasuredHeight)
         panel.maxSize = NSSize(width: MenuMetrics.width, height: MenuMetrics.hostingHeight)
@@ -661,11 +652,24 @@ final class StatusMenuPanel: NSPanel {
         hostView?.layoutSubtreeIfNeeded()
     }
 
-    /// Kill the WindowServer hairline that contours `hasShadow` on transparent panels.
-    /// Stock Control Center menus suppress this rim; without it we get a gray outline.
-    @objc(_shadowRimInfo)
-    func shadowRimInfo() -> [String: NSNumber] {
-        ["kCUIMeasureWindowFrameRimDensity": 0]
+    /// WindowServer draws a 1px rim on shadowed transparent windows. Native extras
+    /// zero these densities; the old `_shadowRimInfo` key no longer does.
+    @objc func shadowParameters() -> [AnyHashable: Any] {
+        let sel = #selector(shadowParameters)
+        let parent = unsafeBitCast(
+            NSPanel.instanceMethod(for: sel),
+            to: (@convention(c) (Any?, Selector) -> Any?).self
+        )(self, sel)
+        var params = (parent as? [AnyHashable: Any]) ?? [:]
+        for key in [
+            "com.apple.WindowShadowRimDensityActive",
+            "com.apple.WindowShadowRimDensityInactive",
+            "com.apple.WindowShadowInnerRimDensityActive",
+            "com.apple.WindowShadowInnerRimDensityInactive",
+        ] {
+            params[key] = 0
+        }
+        return params
     }
 }
 
@@ -885,8 +889,8 @@ enum MenuMetrics {
     /// resizing while the panel animates. Overflow is clipped by the panel.
     static let hostingHeight: CGFloat = 1600
     static let screenMargin: CGFloat = 8
-    /// Gap between menu-bar bottom and panel top (matches system extras).
-    static let menuBarGap: CGFloat = 5
+    /// Gap between menu-bar bottom and panel top (Wi‑Fi / Control Center sit on 1).
+    static let menuBarGap: CGFloat = 1
 
     /// Tallest panel that still fits under the menu bar on the screen under the pointer.
     static func maxPanelHeight() -> CGFloat {
