@@ -224,6 +224,10 @@ struct ProfileEditorView: View {
                 channelSection(channel, draft: draft)
             }
         }
+        .onPreferenceChange(FilterHeaderHeightKey.self) { height in
+            guard height > 0 else { return }
+            filterHeaderHeight = height
+        }
         .onPreferenceChange(FilterBlockFramesKey.self) { frames in
             guard !filterDisclosureBusy else { return }
             updateMeasuredFilterHeights(frames, expandedID: draft.expandedBandID)
@@ -256,9 +260,10 @@ struct ProfileEditorView: View {
                             .coordinateSpace(name: "filterList")
                             .background {
                                 if progress.wrappedValue > 0.5 {
-                                    FilterListScrollBridge {
-                                        filterScroller.scrollView = $0
-                                        filterScroller.applyPinnedHeight()
+                                    FilterListScrollBridge { scroll in
+                                        if let scroll {
+                                            filterScroller.attach(scroll)
+                                        }
                                     }
                                 }
                             }
@@ -352,6 +357,14 @@ struct ProfileEditorView: View {
             .focusable(false)
             .tint(accent)
             .controlSize(.regular)
+        }
+        .background {
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: FilterHeaderHeightKey.self,
+                    value: geo.size.height
+                )
+            }
         }
     }
 
@@ -578,9 +591,12 @@ struct ProfileEditorView: View {
     }
 
     private func addFilter(to channel: ProfileEditorChannel) {
+        filterDisclosureBusy = true
+        filterScroller.pinToBottom(for: PopoverChrome.disclosureDuration)
         popoverChrome.animatingDisclosure {
             appState.updateProfileEditor { $0.addPeakingBand(to: channel) }
         }
+        finishFilterDisclosure(closing: nil)
     }
 
     private func addFilterTopPadding(bands: [ProfileEditorBand], expandedID: UUID?) -> CGFloat {
@@ -776,8 +792,12 @@ struct ProfileEditorView: View {
     }
 
     private func updateMeasuredFilterHeights(_ frames: [UUID: CGRect], expandedID: UUID?) {
+        let bodyFloor = filterExpandedBodyHeight > 0
+            ? filterExpandedBodyHeight
+            : Limits.fallbackExpandedBodyHeight
         if let collapsed = frames.first(where: { $0.key != expandedID && $0.key != closingBandID })?.value.height,
-           collapsed > 0 {
+           collapsed > 0,
+           collapsed < bodyFloor {
             filterHeaderHeight = collapsed
         }
         if let expandedID, let frame = frames[expandedID], filterHeaderHeight > 0 {
@@ -1384,6 +1404,14 @@ private final class FilterSectionScrollView: NSView {
     }
 }
 
+private struct FilterHeaderHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 private struct FilterBlockFramesKey: PreferenceKey {
     static var defaultValue: [UUID: CGRect] = [:]
 
@@ -1447,6 +1475,15 @@ private struct PredictedFilterLayout {
 private final class FilterListScroller {
     weak var scrollView: NSScrollView?
     private var pinnedContentHeight: CGFloat = 0
+    private var pinToBottomGeneration = 0
+    private var isPinningToBottom = false
+    private var documentFrameObserver: NSObjectProtocol?
+
+    deinit {
+        if let documentFrameObserver {
+            NotificationCenter.default.removeObserver(documentFrameObserver)
+        }
+    }
 
     var viewportHeight: CGFloat {
         scrollView?.contentView.bounds.height ?? 0
@@ -1461,6 +1498,31 @@ private final class FilterListScroller {
         return offsetYFromTop(in: scrollView)
     }
 
+    func attach(_ scroll: NSScrollView) {
+        if scrollView !== scroll {
+            scrollView = scroll
+            observeDocumentFrame(in: scroll)
+        }
+        applyPinnedHeight()
+        if isPinningToBottom {
+            pinToBottom()
+        }
+    }
+
+    /// While the new row’s height is appearing, keep the visible bottom glued
+    /// to the end of the list so growth goes off the top.
+    func pinToBottom(for duration: TimeInterval) {
+        pinToBottomGeneration += 1
+        let generation = pinToBottomGeneration
+        isPinningToBottom = true
+        pinToBottom()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(duration))
+            guard generation == pinToBottomGeneration else { return }
+            isPinningToBottom = false
+        }
+    }
+
     func setVerticalScrollerHidden(_ hidden: Bool) {
         guard let scrollView else { return }
         scrollView.verticalScroller?.alphaValue = hidden ? 0 : 1
@@ -1468,12 +1530,43 @@ private final class FilterListScroller {
     }
 
     func pinContentHeight(_ height: CGFloat) {
-        pinnedContentHeight = height
+        pinnedContentHeight = max(pinnedContentHeight, height)
         applyPinnedHeight()
     }
 
     func clearPinnedHeight() {
         pinnedContentHeight = 0
+    }
+
+    private func observeDocumentFrame(in scroll: NSScrollView) {
+        if let documentFrameObserver {
+            NotificationCenter.default.removeObserver(documentFrameObserver)
+            self.documentFrameObserver = nil
+        }
+        guard let document = scroll.documentView else { return }
+        document.postsFrameChangedNotifications = true
+        documentFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: document,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleDocumentFrameChange()
+            }
+        }
+    }
+
+    private func handleDocumentFrameChange() {
+        guard isPinningToBottom else { return }
+        pinToBottom()
+    }
+
+    private func pinToBottom() {
+        guard let scrollView else { return }
+        let viewport = scrollView.contentView.bounds.height
+        guard viewport > 0 else { return }
+        let contentH = max(pinnedContentHeight, scrollView.documentView?.frame.height ?? 0)
+        setOffsetYFromTop(max(0, contentH - viewport), in: scrollView, animated: false)
     }
 
     func applyPinnedHeight() {

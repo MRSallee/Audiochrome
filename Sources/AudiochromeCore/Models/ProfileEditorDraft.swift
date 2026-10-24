@@ -121,16 +121,22 @@ public struct ProfileEditorDraft: Equatable, Sendable {
         return nil
     }
 
-    public mutating func addPeakingBand(to channel: ProfileEditorChannel = .both) {
-        let band = ProfileEditorBand(
-            filter: EQFilter(enabled: true, kind: .peaking, frequencyHz: 1_000, gainDB: 0, q: 1)
-        )
+    public mutating func addBand(_ band: ProfileEditorBand, to channel: ProfileEditorChannel) {
         switch channel {
         case .both: bands.append(band)
         case .left: leftBands.append(band)
         case .right: rightBands.append(band)
         }
         expandedBandID = band.id
+    }
+
+    public mutating func addPeakingBand(to channel: ProfileEditorChannel = .both) {
+        addBand(
+            ProfileEditorBand(
+                filter: EQFilter(enabled: true, kind: .peaking, frequencyHz: 1_000, gainDB: 0, q: 1)
+            ),
+            to: channel
+        )
     }
 
     public mutating func removeBand(id: UUID) {

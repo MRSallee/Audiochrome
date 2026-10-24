@@ -1102,6 +1102,11 @@ final class PopoverChrome: ObservableObject {
         guard h >= MenuMetrics.minMeasuredHeight else { return }
         heightByScreen[screen] = h
         guard screen == presentedScreen else { return }
+
+        let previous = measuredHeight
+        if expectsAnimatedHeight, abs(h - previous) < 0.5 {
+            return
+        }
         measuredHeight = h
         guard panelIsShowing(), !lockHeight else { return }
 
@@ -1249,13 +1254,16 @@ private struct MenuBarRoot: View {
         MeasuredScreen(screen: .home, chrome: chrome) {
             MenuBarView()
         }
+            .allowsHitTesting(homeIsInteractive)
+            .accessibilityHidden(!homeIsInteractive)
+            // Expand before the overlays so the shade and editor fill the panel,
+            // not just the home menu’s intrinsic height.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .overlay {
                 Rectangle()
                     .fill(Color.black.opacity(0.32 * chrome.overlayProgress))
                     .allowsHitTesting(chrome.overlayProgress > 0.02)
             }
-            .allowsHitTesting(homeIsInteractive)
-            .accessibilityHidden(!homeIsInteractive)
             .overlay(alignment: .topLeading) {
                 slidingOverlay
             }
@@ -1271,10 +1279,6 @@ private struct MenuBarRoot: View {
                     chrome.syncToMeasuredHeight()
                 }
             }
-            // Top-align within the fixed-height hosting view. This makes the root greedy,
-            // so the panel's height comes from the measurement above, never from asking
-            // the hosting controller what size it wants.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .onAppear {
                 if let kind = appState.effectsEditorKind {
                     lingeringEffectsKind = kind
@@ -1295,8 +1299,9 @@ private struct MenuBarRoot: View {
         if let screen = chrome.mountedOverlay, screen != .home {
             MeasuredScreen(screen: screen, chrome: chrome) {
                 overlayScreen(screen)
-                    .background { overlayVeil }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background { overlayVeil }
             .offset(x: (1 - chrome.overlayProgress) * MenuMetrics.width)
             .allowsHitTesting(chrome.overlayProgress > 0.02)
             .accessibilityHidden(chrome.overlayProgress < 0.5)
