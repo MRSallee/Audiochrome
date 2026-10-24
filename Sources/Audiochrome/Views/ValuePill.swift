@@ -152,12 +152,13 @@ private struct PillNumberField: NSViewRepresentable {
         context.coordinator.format = format
         context.coordinator.onEditingChange = onEditingChange
         context.coordinator.applyTextColor(isEnabled: isEnabled)
+        // Don't clobber an in-progress edit. A parent refresh (waveform, layout
+        // prefs) would otherwise write the last committed value back and select-all,
+        // so the next keystroke replaces what the user just typed.
+        guard field.currentEditor() == nil else { return }
         let formatted = format(value)
         if field.stringValue != formatted {
             field.stringValue = formatted
-            if let editor = field.currentEditor() {
-                editor.selectedRange = NSRange(location: 0, length: (editor.string as NSString).length)
-            }
         }
     }
 
